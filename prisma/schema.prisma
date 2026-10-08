@@ -1,4 +1,3 @@
-
 generator client {
   provider     = "prisma-client"
   output       = "../src/generated/prisma"
@@ -14,14 +13,78 @@ enum Role {
   STAFF
 }
 
+enum SessionRevokeReason {
+  LOGOUT
+  USER_REVOKED
+  PASSWORD_CHANGED
+  PASSWORD_RESET
+  REUSE_DETECTED
+  ACCOUNT_DISABLED
+}
+
 model User {
   id              String    @id @default(uuid())
   name            String
   email           String    @unique
-  passwordHash    String
+  // Null until an invited user sets a password; login treats null as invalid credentials.
+  passwordHash    String?
   role            Role      @default(STAFF)
   emailVerifiedAt DateTime?
   isActive        Boolean   @default(true)
+  lastLoginAt     DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+
+  sessions                Session[]
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+}
+
+// One row per signed-in browser. The refresh credential is "<id>.<secret>"; only
+// the SHA-256 of the secret is stored.
+model Session {
+  id                       String               @id @default(uuid())
+  userId                   String
+  user                     User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash         String
+  // Hash replaced by the latest rotation; lets a lost race be told apart from token theft.
+  previousRefreshTokenHash String?
+  rotatedAt                DateTime?
+  expiresAt                DateTime
+  lastUsedAt               DateTime             @default(now())
+  revokedAt                DateTime?
+  revokedReason            SessionRevokeReason?
+  ipAddress                String?
+  userAgent                String?
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+}
+
+// Also used for staff invitations: accepting an invite is a password reset that
+// additionally verifies the email address.
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
 }
