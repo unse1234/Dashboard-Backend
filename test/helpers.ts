@@ -4,6 +4,11 @@ import * as argon2 from 'argon2';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
+import {
+  MAIL_TRANSPORT,
+  type MailMessage,
+  type MailTransport,
+} from '../src/mail/mail-transport';
 import type { Role } from '../src/generated/prisma/client';
 import { PrismaService } from '../src/prisma/prisma.service';
 
@@ -13,16 +18,60 @@ export const TEST_PASSWORD = 'Str0ng-Passw0rd!';
 /** Headers a browser on the allowed dashboard origin would send to cookie endpoints. */
 export const csrfHeaders = { Origin: ORIGIN, 'X-CSRF-Protection': '1' };
 
+/** Captures outgoing email so tests can read the links the app would have sent. */
+export class MemoryMailTransport implements MailTransport {
+  readonly sent: MailMessage[] = [];
+
+  send(message: MailMessage): Promise<void> {
+    this.sent.push(message);
+    return Promise.resolve();
+  }
+
+  to(email: string): MailMessage[] {
+    return this.sent.filter((m) => m.to === email);
+  }
+
+  clear(): void {
+    this.sent.length = 0;
+  }
+}
+
+/** Pulls the single-use token out of the link in an email body. */
+export function tokenFrom(message: MailMessage): string {
+  const match = /token=([A-Za-z0-9_%-]+)/.exec(message.text);
+  if (!match) throw new Error(`no token link in email: ${message.subject}`);
+  return decodeURIComponent(match[1]);
+}
+
+/** Emails to forgot-password and resend are sent in the background; poll briefly. */
+export async function waitForMail(
+  mail: MemoryMailTransport,
+  email: string,
+  count = 1,
+): Promise<MailMessage[]> {
+  for (let i = 0; i < 100; i++) {
+    if (mail.to(email).length >= count) return mail.to(email);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `expected ${count} email(s) to ${email}, got ${mail.to(email).length}`,
+  );
+}
+
 export interface TestContext {
   app: NestExpressApplication;
   prisma: PrismaService;
+  mail: MemoryMailTransport;
   close: () => Promise<void>;
 }
 
 export async function createTestApp(
   customize?: (builder: ReturnType<typeof Test.createTestingModule>) => void,
 ): Promise<TestContext> {
-  const builder = Test.createTestingModule({ imports: [AppModule] });
+  const mail = new MemoryMailTransport();
+  const builder = Test.createTestingModule({ imports: [AppModule] })
+    .overrideProvider(MAIL_TRANSPORT)
+    .useValue(mail);
   customize?.(builder);
   const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>();
@@ -31,6 +80,7 @@ export async function createTestApp(
   return {
     app,
     prisma: app.get(PrismaService),
+    mail,
     close: () => app.close(),
   };
 }
