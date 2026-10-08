@@ -16,6 +16,7 @@ Object.assign(process.env, {
   JWT_ACCESS_SECRET: 'test-only-secret-test-only-secret-test-only-secret',
   MAIL_TRANSPORT: 'console',
   COOKIE_SECURE: 'false',
+  RATE_LIMIT_ENABLED: 'false',
 });
 
 const databaseName = new URL(

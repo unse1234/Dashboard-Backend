@@ -102,6 +102,11 @@ export class EnvironmentVariables {
   @IsNotEmpty()
   JWT_AUDIENCE: string = 'ecom-dash-dashboard';
 
+  /** Disabling is for automated tests only; production refuses to start without it. */
+  @Transform(toBoolean)
+  @IsBoolean()
+  RATE_LIMIT_ENABLED: boolean = true;
+
   @IsInt()
   @Min(1)
   @Max(90)
@@ -219,6 +224,9 @@ function checkCrossFieldRules(config: EnvironmentVariables): string[] {
   if (config.NODE_ENV === NodeEnv.Production) {
     if (!config.COOKIE_SECURE) {
       problems.push('COOKIE_SECURE must be true in production');
+    }
+    if (!config.RATE_LIMIT_ENABLED) {
+      problems.push('RATE_LIMIT_ENABLED must be true in production');
     }
     if (config.MAIL_TRANSPORT !== MailTransportKind.Smtp) {
       problems.push('MAIL_TRANSPORT must be smtp in production');
