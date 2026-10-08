@@ -25,6 +25,12 @@ import { toPublicUser, type PublicUser } from '../users/public-user';
 import { AuthService, type AuthResponse } from './auth.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
+import {
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  VerifyEmailDto,
+} from './dto/recovery.dto';
+import { RecoveryService } from './recovery.service';
 import { RefreshCookieService } from './refresh-cookie.service';
 import {
   RefreshRaceException,
@@ -43,6 +49,7 @@ export class AuthController {
     private readonly auth: AuthService,
     private readonly sessions: SessionsService,
     private readonly cookies: RefreshCookieService,
+    private readonly recovery: RecoveryService,
   ) {}
 
   @Public()
@@ -113,6 +120,54 @@ export class AuthController {
     @Body() dto: ChangePasswordDto,
   ): Promise<void> {
     await this.auth.changePassword(user, dto);
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 3, ttl: MINUTE_MS } })
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post('forgot-password')
+  async forgotPassword(
+    @Body() dto: ForgotPasswordDto,
+  ): Promise<{ message: string }> {
+    await this.recovery.requestPasswordReset(dto.email);
+    // Identical for known and unknown addresses.
+    return {
+      message:
+        'If an account exists for that email address, a password reset link has been sent.',
+    };
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: MINUTE_MS } })
+  @HttpCode(HttpStatus.OK)
+  @Post('reset-password')
+  async resetPassword(
+    @Body() dto: ResetPasswordDto,
+  ): Promise<{ message: string }> {
+    await this.recovery.resetPassword(dto.token, dto.password);
+    return { message: 'Your password has been reset. You can now sign in.' };
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: MINUTE_MS } })
+  @HttpCode(HttpStatus.OK)
+  @Post('verify-email')
+  async verifyEmail(@Body() dto: VerifyEmailDto): Promise<{ message: string }> {
+    await this.recovery.verifyEmail(dto.token);
+    return { message: 'Your email address has been verified.' };
+  }
+
+  @Throttle({ default: { limit: 3, ttl: MINUTE_MS } })
+  @HttpCode(HttpStatus.ACCEPTED)
+  @Post('resend-verification')
+  async resendVerification(
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<{ message: string }> {
+    await this.recovery.resendVerification(user);
+    return {
+      message:
+        'If your email address is not yet verified, a new verification link has been sent.',
+    };
   }
 
   @Get('sessions')

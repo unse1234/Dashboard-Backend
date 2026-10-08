@@ -1,8 +1,11 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '../generated/prisma/client';
+import { PrismaClient, type Prisma } from '../generated/prisma/client';
 import type { Env } from '../config/env.validation';
+
+/** Either the shared client or the client handed to an interactive transaction. */
+export type Db = Prisma.TransactionClient | PrismaService;
 
 /**
  * Single shared Prisma 7 client. Prisma 7 requires a driver adapter, so the

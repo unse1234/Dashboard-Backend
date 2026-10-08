@@ -6,8 +6,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.validation';
 import { generateToken, safeEqual, sha256 } from '../common/crypto.util';
-import type { Prisma, SessionRevokeReason } from '../generated/prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import type { SessionRevokeReason } from '../generated/prisma/client';
+import { PrismaService, type Db } from '../prisma/prisma.service';
 import { publicUserSelect, type PublicUser } from '../users/public-user';
 
 /**
@@ -46,8 +46,6 @@ export interface SessionSummary {
   lastUsedAt: Date;
   expiresAt: Date;
 }
-
-type Db = Prisma.TransactionClient | PrismaService;
 
 @Injectable()
 export class SessionsService {
