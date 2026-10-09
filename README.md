@@ -62,10 +62,12 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | PATCH | `/users/:id/active` | ADMIN | `{ isActive: boolean }`; not on yourself; the last active admin is protected. Deactivating revokes all of the user's sessions |
 | PATCH | `/users/:id/role` | ADMIN | `{ role: "ADMIN" \| "STAFF" }`; not on yourself; the last active admin is protected. Applies to the user's existing tokens immediately |
 | DELETE | `/users/:id` | ADMIN | Soft delete, `204`; not yourself; the last active admin is protected |
+| GET | `/customers` | ADMIN, STAFF | `?page=1&pageSize=20&search&sortBy&sortOrder` (`pageSize` ≤ 100; `search` matches name, email or phone, case-insensitive, or a customer id such as `CUS-1001` or `1001`; `sortBy` is `id`, `name`, `email`, `totalOrders`, `totalSpent` or `joinedAt`, `sortOrder` is `asc` (default) or `desc`; newest first without `sortBy`) → `{ data, meta: { page, pageSize, total, totalPages } }` |
+| GET | `/customers/:customerId` | ADMIN, STAFF | `{ customer, addresses, recentOrders }` (the 3 latest orders); `404` if unknown, `400` if `:customerId` is not like `CUS-1001` |
 
 Unverified users can sign in and use the `/auth/*` account routes; everything else
-(`/users`) requires a verified email. Passwords: 12–128 characters with a lowercase letter,
-an uppercase letter and a number.
+(`/users`, `/customers`) requires a verified email. Passwords: 12–128 characters with a
+lowercase letter, an uppercase letter and a number.
 
 ### How the frontend must use it
 
@@ -100,6 +102,25 @@ an uppercase letter and a number.
 > **Deploying:** migration `20261009120000_user_soft_delete` adds the nullable `User.deletedAt`
 > column. Run `npx prisma migrate deploy` against each environment **before** starting this
 > version; the code selects that column.
+
+### Customers
+
+Customers are storefront shoppers, not dashboard users: they have their own `Customer` table,
+never sign in here, and the API is read-only. Responses use public ids only (`CUS-<number>`,
+`ORD-<number>`); internal uuids are never returned. Enums are sent as stored (`SHIPPING`,
+`DELIVERED`, ...). Amounts are numbers in USD, stored as `NUMERIC(12,2)`.
+
+Statistics are computed from the orders on every read: `totalOrders` counts every order,
+cancelled ones included; `totalSpent` sums the totals of orders that were **not** cancelled;
+`lastOrderAt` is the latest order of any status, or `null`.
+
+Orders keep snapshots of the customer, the addresses and the products as they were when placed.
+The database enforces non-negative amounts, `total = subtotal + shipping - discount + tax`,
+line `total = quantity × unitPrice`, one default address per customer and type, and that a
+customer with orders cannot be deleted.
+
+> **Deploying:** migration `20261009130000_customers_and_orders` only adds tables. Deploy it
+> after `20261009120000_user_soft_delete`.
 
 ## Security model
 
@@ -171,6 +192,7 @@ automatically before the suite and tables are cleared between tests. Jest runs w
 - `src/prisma/` — global `PrismaService` (driver adapter, lifecycle).
 - `src/auth/` — login, sessions, tokens, password recovery, verification.
 - `src/users/` — admin user management and invitations.
+- `src/customers/` — read-only customers list and details.
 - `src/mail/` — mail abstraction with console and SMTP transports.
 - `src/common/` — guards, decorators, validators, crypto helpers.
 - `src/scripts/create-admin.ts` — first-admin bootstrap.
