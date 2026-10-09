@@ -11,6 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import { SessionsService } from '../auth/sessions.service';
 import { RecoveryService } from '../auth/recovery.service';
 import type { AuthenticatedUser } from '../common/authenticated-user';
+import { escapeLike } from '../common/like.util';
 import type { Env } from '../config/env.validation';
 import { Prisma, type Role } from '../generated/prisma/client';
 import { MailService } from '../mail/mail.service';
@@ -26,9 +27,6 @@ import { publicUserSelect, type PublicUser } from './public-user';
 const ADMIN_MEMBERSHIP_LOCK = 7_410_001;
 
 const HOUR_MS = 60 * 60 * 1000;
-
-/** Prisma passes `contains` straight into LIKE, so make %, _ and \ match literally. */
-const escapeLike = (value: string) => value.replace(/[\\%_]/g, '\\$&');
 
 export interface InviteResult {
   user: PublicUser;
