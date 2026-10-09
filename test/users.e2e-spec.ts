@@ -49,6 +49,7 @@ describe('Users and invitations (e2e)', () => {
     it('requires authentication on every users route', async () => {
       const id = '00000000-0000-4000-8000-000000000000';
       await http().get('/users').expect(401);
+      await http().get('/users/me').expect(401);
       await http().get(`/users/${id}`).expect(401);
       await http()
         .post('/users')
@@ -86,6 +87,107 @@ describe('Users and invitations (e2e)', () => {
         .set(bearer(accessToken))
         .expect(403);
       expect(res.body.message).toBe('Email verification required');
+    });
+  });
+
+  describe('GET /users/me', () => {
+    const PROFILE_FIELDS = [
+      'createdAt',
+      'email',
+      'emailVerifiedAt',
+      'id',
+      'isActive',
+      'lastLoginAt',
+      'name',
+      'role',
+      'updatedAt',
+    ];
+
+    it.each(['ADMIN', 'STAFF'] as const)(
+      "returns the caller's own profile to a %s, and only allowlisted fields",
+      async (role) => {
+        const created = await createUser(ctx.prisma, {
+          email: 'me@example.com',
+          name: 'Me Myself',
+          role,
+        });
+        await createUser(ctx.prisma, { email: 'someone-else@example.com' });
+        const { accessToken } = await login(ctx.app, 'me@example.com');
+
+        const res = await http()
+          .get('/users/me')
+          .set(bearer(accessToken))
+          .expect(200);
+
+        expect(res.body).toEqual(
+          expect.objectContaining({
+            id: created.id,
+            email: 'me@example.com',
+            name: 'Me Myself',
+            role,
+            isActive: true,
+          }),
+        );
+        // Exact key set: anything new on the User model must be opted in.
+        expect(Object.keys(res.body as object).sort()).toEqual(PROFILE_FIELDS);
+        expect(JSON.stringify(res.body)).not.toMatch(
+          /passwordHash|argon2|sessionId|refresh/i,
+        );
+      },
+    );
+
+    it('is not captured by the :id route', async () => {
+      // If `me` were matched as an id, ParseUUIDPipe would answer 400 (or an
+      // admin would get 404), never the caller's own record.
+      const token = await adminToken();
+      const res = await http().get('/users/me').set(bearer(token)).expect(200);
+      expect(res.body.email).toBe('admin@example.com');
+    });
+
+    it('rejects a missing, malformed or forged token', async () => {
+      await http().get('/users/me').expect(401);
+      await http().get('/users/me').set(bearer('not-a-jwt')).expect(401);
+      await http()
+        .get('/users/me')
+        .set({ Authorization: 'Basic abc' })
+        .expect(401);
+    });
+
+    it('follows the platform policy for unverified accounts', async () => {
+      await createUser(ctx.prisma, {
+        email: 'new@example.com',
+        verified: false,
+      });
+      const { accessToken } = await login(ctx.app, 'new@example.com');
+      const res = await http()
+        .get('/users/me')
+        .set(bearer(accessToken))
+        .expect(403);
+      expect(res.body.message).toBe('Email verification required');
+      // Unverified users keep self-service through /auth/me.
+      await http().get('/auth/me').set(bearer(accessToken)).expect(200);
+    });
+
+    it('stops working as soon as the account is deactivated', async () => {
+      const token = await adminToken();
+      const target = await createUser(ctx.prisma, {
+        email: 'target@example.com',
+      });
+      const session = await login(ctx.app, 'target@example.com');
+      await http()
+        .get('/users/me')
+        .set(bearer(session.accessToken))
+        .expect(200);
+
+      await http()
+        .patch(`/users/${target.id}`)
+        .set(bearer(token))
+        .send({ isActive: false })
+        .expect(200);
+      await http()
+        .get('/users/me')
+        .set(bearer(session.accessToken))
+        .expect(401);
     });
   });
 
@@ -383,6 +485,84 @@ describe('Users and invitations (e2e)', () => {
     it('treats search text literally, not as a pattern', async () => {
       const res = await list('?search=%25');
       expect(res.body.meta.total).toBe(0);
+    });
+
+    it('matches LIKE metacharacters in names literally and case-insensitively', async () => {
+      await createUser(ctx.prisma, {
+        email: 'promo@example.com',
+        name: '100%_Real',
+      });
+      await createUser(ctx.prisma, {
+        email: 'plain@example.com',
+        name: '100 Real',
+      });
+
+      // %25 = "%", %5F = "_": must match only the name that contains them.
+      const res = await list('?search=100%25%5Freal');
+      expect(emailsOf(res)).toEqual(['promo@example.com']);
+    });
+
+    it('lists newest first, breaking createdAt ties by id, without skipping or repeating rows across pages', async () => {
+      const rows = await ctx.prisma.user.findMany({
+        select: { id: true, email: true },
+      });
+      const byEmail = Object.fromEntries(rows.map((r) => [r.email, r.id]));
+      const day = (n: number) => new Date(Date.UTC(2026, 0, n));
+      await ctx.prisma.user.update({
+        where: { id: byEmail['admin@example.com'] },
+        data: { createdAt: day(1) },
+      });
+      await ctx.prisma.user.update({
+        where: { id: byEmail['bob@example.com'] },
+        data: { createdAt: day(3) },
+      });
+      // carol and dave share a timestamp: the order must still be stable.
+      for (const email of ['carol@example.com', 'dave@example.com']) {
+        await ctx.prisma.user.update({
+          where: { id: byEmail[email] },
+          data: { createdAt: day(2) },
+        });
+      }
+      const tied = ['carol@example.com', 'dave@example.com'].sort((a, b) =>
+        byEmail[a].localeCompare(byEmail[b]),
+      );
+      const expected = ['bob@example.com', ...tied, 'admin@example.com'];
+
+      expect(emailsOf(await list())).toEqual(expected);
+
+      const paged: string[] = [];
+      for (const page of [1, 2, 3, 4]) {
+        paged.push(...emailsOf(await list(`?pageSize=1&page=${page}`)));
+      }
+      expect(paged).toEqual(expected);
+    });
+
+    it('returns an empty page, with accurate metadata, past the last page', async () => {
+      const res = await list('?page=5&pageSize=2');
+      expect(res.body.data).toEqual([]);
+      expect(res.body.meta).toEqual({
+        page: 5,
+        pageSize: 2,
+        total: 4,
+        totalPages: 2,
+      });
+    });
+
+    it('applies filters to both the rows and the total', async () => {
+      const res = await list('?isActive=true&pageSize=2&page=1');
+      expect(res.body.data).toHaveLength(2);
+      expect(res.body.meta).toEqual({
+        page: 1,
+        pageSize: 2,
+        total: 3,
+        totalPages: 2,
+      });
+    });
+
+    it('answers an enormous page number with an empty page rather than an error', async () => {
+      const res = await list('?page=9007199254740991');
+      expect(res.body.data).toEqual([]);
+      expect(res.body.meta.total).toBe(4);
     });
 
     it.each([

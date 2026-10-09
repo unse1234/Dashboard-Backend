@@ -54,8 +54,9 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | GET | `/auth/sessions` | signed in | Active sessions, `current` flags yours |
 | DELETE | `/auth/sessions/:id` | signed in | Own sessions only (otherwise `404`), `204` |
 | POST | `/users` | ADMIN | `{ name, email, role? }` → invitation email; `409` on duplicate email |
-| GET | `/users` | ADMIN | `?page&pageSize&search&role&isActive` |
-| GET | `/users/:id` | ADMIN | |
+| GET | `/users/me` | any signed-in user, verified email | Own profile (same body as `/auth/me`) |
+| GET | `/users` | ADMIN | `?page=1&pageSize=20&search&role&isActive` (`pageSize` ≤ 100; `search` matches name or email, case-insensitive; newest first) → `{ data, meta: { page, pageSize, total, totalPages } }` |
+| GET | `/users/:id` | ADMIN | `404` if unknown, `400` if `:id` is not a UUID |
 | PATCH | `/users/:id` | ADMIN | `{ name?, role?, isActive? }`; not on yourself; the last admin is protected |
 
 Unverified users can sign in and use the `/auth/*` account routes; everything else
