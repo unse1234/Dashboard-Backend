@@ -32,6 +32,10 @@ model User {
   emailVerifiedAt DateTime?
   isActive        Boolean   @default(true)
   lastLoginAt     DateTime?
+  // Soft delete. Accounts are never hard-deleted so that records referencing a user
+  // (orders, audit trails, ...) stay intact. A deleted user is always inactive, which
+  // a CHECK constraint in the migration enforces; that is what blocks sign-in.
+  deletedAt       DateTime?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
