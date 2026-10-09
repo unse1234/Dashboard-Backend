@@ -9,7 +9,12 @@ import {
   type MailMessage,
   type MailTransport,
 } from '../src/mail/mail-transport';
-import type { Role } from '../src/generated/prisma/client';
+import type {
+  AddressType,
+  OrderStatus,
+  PaymentStatus,
+  Role,
+} from '../src/generated/prisma/client';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 export const ORIGIN = 'http://localhost:3000';
@@ -87,7 +92,7 @@ export async function createTestApp(
 
 export async function resetDatabase(prisma: PrismaService): Promise<void> {
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "Session", "PasswordResetToken", "EmailVerificationToken", "User" CASCADE',
+    'TRUNCATE TABLE "Session", "PasswordResetToken", "EmailVerificationToken", "User", "OrderItem", "Order", "CustomerAddress", "Customer" CASCADE',
   );
 }
 
@@ -176,3 +181,127 @@ export function clearsRefreshCookie(response: request.Response): boolean {
 }
 
 export const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+export interface CustomerOptions {
+  name?: string;
+  email?: string;
+  phone?: string | null;
+  createdAt?: Date;
+}
+
+let customerSeq = 0;
+
+export function createCustomer(
+  prisma: PrismaService,
+  options: CustomerOptions = {},
+) {
+  customerSeq += 1;
+  return prisma.customer.create({
+    data: {
+      name: options.name ?? `Customer ${customerSeq}`,
+      email: options.email ?? `customer${customerSeq}@example.com`,
+      phone: options.phone === undefined ? null : options.phone,
+      ...(options.createdAt ? { createdAt: options.createdAt } : {}),
+    },
+  });
+}
+
+export interface AddressOptions {
+  type?: AddressType;
+  isDefault?: boolean;
+  recipientName?: string;
+  city?: string;
+  createdAt?: Date;
+}
+
+export function createAddress(
+  prisma: PrismaService,
+  customerId: string,
+  options: AddressOptions = {},
+) {
+  return prisma.customerAddress.create({
+    data: {
+      customerId,
+      type: options.type ?? 'SHIPPING',
+      isDefault: options.isDefault ?? false,
+      recipientName: options.recipientName ?? 'Test Recipient',
+      phone: null,
+      addressLine1: '1 Test Street',
+      addressLine2: null,
+      city: options.city ?? 'Springfield',
+      region: null,
+      postalCode: '12345',
+      country: 'United States',
+      ...(options.createdAt ? { createdAt: options.createdAt } : {}),
+    },
+  });
+}
+
+export interface OrderOptions {
+  /** The order total in USD (default 100). The subtotal is derived from it. */
+  total?: number;
+  shipping?: number;
+  discount?: number;
+  tax?: number;
+  status?: OrderStatus;
+  paymentStatus?: PaymentStatus;
+  createdAt?: Date;
+}
+
+const testAddress = {
+  recipientName: 'Test Recipient',
+  phone: null,
+  addressLine1: '1 Test Street',
+  addressLine2: null,
+  city: 'Springfield',
+  region: null,
+  postalCode: '12345',
+  country: 'United States',
+};
+
+const toCents = (amount: number) => Math.round(amount * 100);
+const fromCents = (cents: number) => (cents / 100).toFixed(2);
+
+/**
+ * Creates an order with one line whose amounts satisfy the database checks:
+ * subtotal = total - shipping + discount - tax, and the line totals the subtotal.
+ */
+export function createOrder(
+  prisma: PrismaService,
+  customer: { id: string; name: string; email: string; phone: string | null },
+  options: OrderOptions = {},
+) {
+  const total = toCents(options.total ?? 100);
+  const shipping = toCents(options.shipping ?? 0);
+  const discount = toCents(options.discount ?? 0);
+  const tax = toCents(options.tax ?? 0);
+  const subtotal = total - shipping + discount - tax;
+  return prisma.order.create({
+    data: {
+      customerId: customer.id,
+      customerName: customer.name,
+      customerEmail: customer.email,
+      customerPhone: customer.phone,
+      status: options.status ?? 'DELIVERED',
+      paymentStatus: options.paymentStatus ?? 'PAID',
+      subtotal: fromCents(subtotal),
+      shipping: fromCents(shipping),
+      discount: fromCents(discount),
+      tax: fromCents(tax),
+      total: fromCents(total),
+      shippingAddress: testAddress,
+      billingAddress: testAddress,
+      ...(options.createdAt ? { createdAt: options.createdAt } : {}),
+      items: {
+        create: {
+          productId: 'PRD-1001',
+          productName: 'Test Product',
+          sku: 'TEST-001',
+          quantity: 1,
+          unitPrice: fromCents(subtotal),
+          total: fromCents(subtotal),
+        },
+      },
+    },
+  });
+}
