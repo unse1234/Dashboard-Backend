@@ -18,7 +18,8 @@
     "test:cov": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config ./test/jest-e2e.json",
-    "admin:create": "nest build && node dist/scripts/create-admin.js"
+    "admin:create": "nest build && node dist/scripts/create-admin.js",
+    "seed:dev": "nest build && node dist/scripts/seed-dev-data.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

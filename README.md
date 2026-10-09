@@ -119,6 +119,8 @@ The database enforces non-negative amounts, `total = subtotal + shipping - disco
 line `total = quantity × unitPrice`, one default address per customer and type, and that a
 customer with orders cannot be deleted.
 
+There is no storefront yet, so data comes from the dev seed (see Commands).
+
 > **Deploying:** migration `20261009130000_customers_and_orders` only adds tables. Deploy it
 > after `20261009120000_user_soft_delete`.
 
@@ -155,6 +157,10 @@ or a local catcher such as Mailpit before relying on it.
 - `npm test` — unit tests.
 - `npm run test:e2e` — HTTP + database integration tests (see below).
 - `npm run admin:create -- --email … --name …` — bootstrap the first admin.
+- `npm run seed:dev -- --confirm [--reset]` — sample customers, addresses and orders. It
+  never reads `.env`: set `DATABASE_URL` explicitly to a development or test database. It
+  refuses `NODE_ENV=production`, does nothing without `--confirm`, and refuses a database that
+  already has customers unless `--reset` (which empties the customer and order tables first).
 
 ## Testing
 
@@ -195,5 +201,5 @@ automatically before the suite and tables are cleared between tests. Jest runs w
 - `src/customers/` — read-only customers list and details.
 - `src/mail/` — mail abstraction with console and SMTP transports.
 - `src/common/` — guards, decorators, validators, crypto helpers.
-- `src/scripts/create-admin.ts` — first-admin bootstrap.
+- `src/scripts/create-admin.ts` — first-admin bootstrap. `src/scripts/seed-dev-data.ts` — dev seed.
 - `prisma/` — schema and migrations. `test/` — e2e tests and helpers.
