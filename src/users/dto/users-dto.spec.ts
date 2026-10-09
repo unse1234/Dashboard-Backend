@@ -6,6 +6,9 @@ import {
 } from '../../auth/dto/recovery.dto';
 import { InviteUserDto } from './invite-user.dto';
 import { ListUsersQueryDto } from './list-users-query.dto';
+import { SetUserActiveDto } from './set-user-active.dto';
+import { SetUserRoleDto } from './set-user-role.dto';
+import { UpdateProfileDto } from './update-profile.dto';
 import { UpdateUserDto } from './update-user.dto';
 
 const pipe = new ValidationPipe({
@@ -58,6 +61,75 @@ describe('UpdateUserDto', () => {
         status: 400,
       });
     }
+  });
+});
+
+describe('UpdateProfileDto', () => {
+  it('trims the name', async () => {
+    await expect(
+      run(UpdateProfileDto, { name: '  Ada Lovelace ' }),
+    ).resolves.toMatchObject({ name: 'Ada Lovelace' });
+  });
+
+  it.each([
+    ['no fields', {}],
+    ['a blank name', { name: '   ' }],
+    ['a non-string name', { name: 7 }],
+    ['an over-long name', { name: 'n'.repeat(101) }],
+    ['a role', { name: 'A', role: 'ADMIN' }],
+    ['a status', { name: 'A', isActive: false }],
+    ['an email', { name: 'A', email: 'a@example.com' }],
+    ['a password hash', { name: 'A', passwordHash: 'x' }],
+    ['verification state', { name: 'A', emailVerifiedAt: '2020-01-01' }],
+  ])('rejects %s', async (_label, body) => {
+    await expect(run(UpdateProfileDto, body)).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+});
+
+describe('SetUserActiveDto', () => {
+  it('accepts only a real boolean', async () => {
+    await expect(
+      run(SetUserActiveDto, { isActive: false }),
+    ).resolves.toMatchObject({ isActive: false });
+    await expect(
+      run(SetUserActiveDto, { isActive: true }),
+    ).resolves.toMatchObject({ isActive: true });
+  });
+
+  it.each([
+    {},
+    { isActive: 'false' },
+    { isActive: 0 },
+    { isActive: null },
+    { isActive: true, role: 'ADMIN' },
+    { status: 'inactive' },
+  ])('rejects %p', async (body) => {
+    await expect(run(SetUserActiveDto, body)).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+});
+
+describe('SetUserRoleDto', () => {
+  it.each(['ADMIN', 'STAFF'])('accepts the %s role', async (role) => {
+    await expect(run(SetUserRoleDto, { role })).resolves.toMatchObject({
+      role,
+    });
+  });
+
+  it.each([
+    {},
+    { role: 'OWNER' },
+    { role: 'admin' },
+    { role: null },
+    { role: ['ADMIN'] },
+    { role: 'ADMIN', isActive: false },
+  ])('rejects %p', async (body) => {
+    await expect(run(SetUserRoleDto, body)).rejects.toMatchObject({
+      status: 400,
+    });
   });
 });
 

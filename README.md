@@ -57,7 +57,11 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | GET | `/users/me` | any signed-in user, verified email | Own profile (same body as `/auth/me`) |
 | GET | `/users` | ADMIN | `?page=1&pageSize=20&search&role&isActive` (`pageSize` ≤ 100; `search` matches name or email, case-insensitive; newest first) → `{ data, meta: { page, pageSize, total, totalPages } }` |
 | GET | `/users/:id` | ADMIN | `404` if unknown, `400` if `:id` is not a UUID |
-| PATCH | `/users/:id` | ADMIN | `{ name?, role?, isActive? }`; not on yourself; the last admin is protected |
+| PATCH | `/users/me` | any signed-in user, verified email | `{ name }` only; every other field is rejected with `400` |
+| PATCH | `/users/:id` | ADMIN | `{ name?, role?, isActive? }`; not on yourself; the last admin is protected. Kept for compatibility: prefer the two focused routes below |
+| PATCH | `/users/:id/active` | ADMIN | `{ isActive: boolean }`; not on yourself; the last active admin is protected. Deactivating revokes all of the user's sessions |
+| PATCH | `/users/:id/role` | ADMIN | `{ role: "ADMIN" \| "STAFF" }`; not on yourself; the last active admin is protected. Applies to the user's existing tokens immediately |
+| DELETE | `/users/:id` | ADMIN | Soft delete, `204`; not yourself; the last active admin is protected |
 
 Unverified users can sign in and use the `/auth/*` account routes; everything else
 (`/users`) requires a verified email. Passwords: 12–128 characters with a lowercase letter,
@@ -77,6 +81,25 @@ an uppercase letter and a number.
 - Email links point at the dashboard: `FRONTEND_URL/reset-password?token=…` (password reset
   and invitations) and `FRONTEND_URL/verify-email?token=…`. Those pages must exist in the
   frontend and post the token to the API. Set `Referrer-Policy: no-referrer` on them.
+
+### Deactivating and deleting users
+
+- **Deactivate** (`isActive: false`): sign-in and refresh stop working, and every session of
+  that user is revoked in the same transaction, so their access tokens fail on the next request.
+  **Reactivating** does not bring old sessions back: it revokes any that exist, and the user
+  signs in again.
+- **Delete** is a soft delete (`User.deletedAt`). The row is never removed, so anything that
+  references a user (orders, audit trails, ...) stays intact. A deleted user is also inactive
+  (a database `CHECK` guarantees it), has their sessions revoked and their unused email links
+  voided, and disappears from `/users` (`404`). Their email address stays reserved, so it
+  cannot be invited again. Purging or restoring deleted accounts is not implemented.
+- Role, status and delete changes are serialized with a database lock, and the caller is
+  re-checked as an active admin inside it, so concurrent requests can never leave the system
+  without an active admin.
+
+> **Deploying:** migration `20261009120000_user_soft_delete` adds the nullable `User.deletedAt`
+> column. Run `npx prisma migrate deploy` against each environment **before** starting this
+> version; the code selects that column.
 
 ## Security model
 

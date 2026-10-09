@@ -1,7 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -13,6 +16,9 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
 import { InviteUserDto } from './dto/invite-user.dto';
 import { ListUsersQueryDto } from './dto/list-users-query.dto';
+import { SetUserActiveDto } from './dto/set-user-active.dto';
+import { SetUserRoleDto } from './dto/set-user-role.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { toPublicUser, type PublicUser } from './public-user';
 import {
@@ -39,6 +45,16 @@ export class UsersController {
     return toPublicUser(user);
   }
 
+  // Like `me` above, declared before `:id` and open to any signed-in user.
+  @Roles()
+  @Patch('me')
+  updateMe(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: UpdateProfileDto,
+  ): Promise<PublicUser> {
+    return this.users.updateProfile(user, dto);
+  }
+
   @Post()
   invite(@Body() dto: InviteUserDto): Promise<InviteResult> {
     return this.users.invite(dto);
@@ -61,5 +77,32 @@ export class UsersController {
     @Body() dto: UpdateUserDto,
   ): Promise<PublicUser> {
     return this.users.update(actor, id, dto);
+  }
+
+  @Patch(':id/active')
+  setActive(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetUserActiveDto,
+  ): Promise<PublicUser> {
+    return this.users.setActive(actor, id, dto.isActive);
+  }
+
+  @Patch(':id/role')
+  setRole(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: SetUserRoleDto,
+  ): Promise<PublicUser> {
+    return this.users.setRole(actor, id, dto.role);
+  }
+
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Delete(':id')
+  async remove(
+    @CurrentUser() actor: AuthenticatedUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<void> {
+    await this.users.remove(actor, id);
   }
 }

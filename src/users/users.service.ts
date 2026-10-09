@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SessionsService } from '../auth/sessions.service';
@@ -16,6 +17,7 @@ import { MailService } from '../mail/mail.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import type { InviteUserDto } from './dto/invite-user.dto';
 import type { ListUsersQueryDto } from './dto/list-users-query.dto';
+import type { UpdateProfileDto } from './dto/update-profile.dto';
 import type { UpdateUserDto } from './dto/update-user.dto';
 import { publicUserSelect, type PublicUser } from './public-user';
 
@@ -95,6 +97,7 @@ export class UsersService {
 
   async list(query: ListUsersQueryDto): Promise<UserPage> {
     const where: Prisma.UserWhereInput = {
+      deletedAt: null,
       ...(query.role ? { role: query.role } : {}),
       ...(query.isActive !== undefined ? { isActive: query.isActive } : {}),
       ...(query.search
@@ -139,14 +142,38 @@ export class UsersService {
   }
 
   async get(id: string): Promise<PublicUser> {
-    const user = await this.prisma.user.findUnique({
-      where: { id },
+    const user = await this.prisma.user.findFirst({
+      where: { id, deletedAt: null },
       select: publicUserSelect,
     });
     if (!user) throw new NotFoundException('User not found');
     return user;
   }
 
+  /** Lets the signed-in user edit their own profile. Only the name is editable. */
+  async updateProfile(
+    actor: AuthenticatedUser,
+    dto: UpdateProfileDto,
+  ): Promise<PublicUser> {
+    try {
+      return await this.prisma.user.update({
+        where: { id: actor.id, deletedAt: null },
+        data: { name: dto.name },
+        select: publicUserSelect,
+      });
+    } catch (error) {
+      // The account was deleted after the guard authenticated this request.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2025'
+      ) {
+        throw new UnauthorizedException('Invalid or expired token');
+      }
+      throw error;
+    }
+  }
+
+  /** Admin edit of name, role and/or status in one call. */
   async update(
     actor: AuthenticatedUser,
     id: string,
@@ -159,21 +186,83 @@ export class UsersService {
     ) {
       throw new BadRequestException('No changes supplied');
     }
+    return this.applyChanges(actor, id, dto);
+  }
+
+  setActive(
+    actor: AuthenticatedUser,
+    id: string,
+    isActive: boolean,
+  ): Promise<PublicUser> {
+    return this.applyChanges(actor, id, { isActive });
+  }
+
+  setRole(
+    actor: AuthenticatedUser,
+    id: string,
+    role: Role,
+  ): Promise<PublicUser> {
+    return this.applyChanges(actor, id, { role });
+  }
+
+  /**
+   * Soft delete: the row is kept so records that reference the user survive, but
+   * the account is deactivated (which is what blocks sign-in; the database forbids a
+   * deleted row from being active), its sessions are revoked and its unused email
+   * links are voided. Deleted users disappear from every users endpoint.
+   */
+  async remove(actor: AuthenticatedUser, id: string): Promise<void> {
+    if (actor.id === id) {
+      throw new ForbiddenException('You cannot delete your own account');
+    }
+
+    await this.asAdmin(actor, async (tx) => {
+      const target = await tx.user.findFirst({
+        where: { id, deletedAt: null },
+        select: publicUserSelect,
+      });
+      if (!target) throw new NotFoundException('User not found');
+      if (target.role === 'ADMIN' && target.isActive) {
+        await this.assertAnotherActiveAdmin(tx, id);
+      }
+
+      const now = new Date();
+      await tx.user.update({
+        where: { id },
+        data: { isActive: false, deletedAt: now },
+      });
+      await this.sessions.revokeAllForUser(id, 'ACCOUNT_DISABLED', { db: tx });
+      // An outstanding invitation or reset link must not outlive the account.
+      await tx.passwordResetToken.updateMany({
+        where: { userId: id, usedAt: null },
+        data: { usedAt: now },
+      });
+      await tx.emailVerificationToken.updateMany({
+        where: { userId: id, usedAt: null },
+        data: { usedAt: now },
+      });
+    });
+  }
+
+  /** The one place role and status changes happen, so every entry point obeys the same rules. */
+  private async applyChanges(
+    actor: AuthenticatedUser,
+    id: string,
+    changes: Pick<UpdateUserDto, 'name' | 'role' | 'isActive'>,
+  ): Promise<PublicUser> {
     // Self-service on role/status would allow an admin to lock themselves out
     // or, for a compromised account, to cover its tracks.
     if (
       actor.id === id &&
-      ((dto.role !== undefined && dto.role !== actor.role) ||
-        dto.isActive === false)
+      ((changes.role !== undefined && changes.role !== actor.role) ||
+        changes.isActive === false)
     ) {
       throw new ForbiddenException('You cannot change your own role or status');
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      await this.lockAdminMembership(tx);
-
-      const target = await tx.user.findUnique({
-        where: { id },
+    return this.asAdmin(actor, async (tx) => {
+      const target = await tx.user.findFirst({
+        where: { id, deletedAt: null },
         select: publicUserSelect,
       });
       if (!target) throw new NotFoundException('User not found');
@@ -181,28 +270,68 @@ export class UsersService {
       const losesAdminAccess =
         target.role === 'ADMIN' &&
         target.isActive &&
-        (dto.role === 'STAFF' || dto.isActive === false);
-      if (losesAdminAccess) {
-        const otherAdmins = await tx.user.count({
-          where: { role: 'ADMIN', isActive: true, id: { not: id } },
-        });
-        if (otherAdmins === 0) {
-          throw new ConflictException('At least one active admin is required');
-        }
-      }
+        ((changes.role !== undefined && changes.role !== 'ADMIN') ||
+          changes.isActive === false);
+      if (losesAdminAccess) await this.assertAnotherActiveAdmin(tx, id);
 
       const updated = await tx.user.update({
         where: { id },
-        data: { name: dto.name, role: dto.role, isActive: dto.isActive },
+        data: {
+          name: changes.name,
+          role: changes.role,
+          isActive: changes.isActive,
+        },
         select: publicUserSelect,
       });
-      if (target.isActive && dto.isActive === false) {
+      // A status change in either direction clears the user's sessions. Disabling
+      // ends them. Re-enabling sweeps any that slipped in while the account was
+      // off (a sign-in that raced the deactivation), so reactivation never revives
+      // an old session and the user always starts from a fresh sign-in.
+      if (target.isActive !== updated.isActive) {
         await this.sessions.revokeAllForUser(id, 'ACCOUNT_DISABLED', {
           db: tx,
         });
       }
       return updated;
     });
+  }
+
+  /**
+   * Runs an account-changing operation inside the admin-membership lock, after
+   * re-checking under that lock that the caller is still an active admin. The
+   * guards ran earlier in the request, so without this an admin who was demoted
+   * or removed a moment ago could still get an in-flight request through.
+   */
+  private asAdmin<T>(
+    actor: AuthenticatedUser,
+    work: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      await this.lockAdminMembership(tx);
+      const stillAdmin = await tx.user.findFirst({
+        where: {
+          id: actor.id,
+          role: 'ADMIN',
+          isActive: true,
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+      if (!stillAdmin) throw new ForbiddenException('Insufficient permissions');
+      return work(tx);
+    });
+  }
+
+  private async assertAnotherActiveAdmin(
+    tx: Db,
+    excludingId: string,
+  ): Promise<void> {
+    const others = await tx.user.count({
+      where: { role: 'ADMIN', isActive: true, id: { not: excludingId } },
+    });
+    if (others === 0) {
+      throw new ConflictException('At least one active admin is required');
+    }
   }
 
   private async createInvitation(
