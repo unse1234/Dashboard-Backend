@@ -42,6 +42,7 @@ model User {
   sessions                Session[]
   passwordResetTokens     PasswordResetToken[]
   emailVerificationTokens EmailVerificationToken[]
+  productEvents           ProductEvent[]
 }
 
 // One row per signed-in browser. The refresh credential is "<id>.<secret>"; only
@@ -194,18 +195,102 @@ model Order {
 }
 
 model OrderItem {
-  id          String  @id @default(uuid())
-  orderId     String
-  order       Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  // The product's public id as a snapshot. There is no Product table yet; the
-  // Products module adds the foreign key.
-  productId   String
-  productName String
-  sku         String
-  quantity    Int
-  unitPrice   Decimal @db.Decimal(12, 2)
+  id               String   @id @default(uuid())
+  orderId          String
+  order            Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  // The product's public id ("PRD-<number>") as a snapshot, so the line reads the
+  // same whatever later happens to the product.
+  productId        String
+  productName      String
+  sku              String
+  quantity         Int
+  unitPrice        Decimal  @db.Decimal(12, 2)
   // quantity x unitPrice, checked in the migration.
-  total       Decimal @db.Decimal(12, 2)
+  total            Decimal  @db.Decimal(12, 2)
+  // The catalogue product the line came from. Null for lines recorded before
+  // products existed. Restrict: products are archived, never deleted.
+  catalogProductId String?
+  product          Product? @relation(fields: [catalogProductId], references: [id], onDelete: Restrict)
 
   @@index([orderId])
+  @@index([catalogProductId])
+}
+
+// ---------------------------------------------------------------------------
+// Products. One product is one sellable unit: one SKU, one price, one stock
+// count. Order lines snapshot the product, so editing or archiving it never
+// rewrites history.
+// ---------------------------------------------------------------------------
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ProductEventType {
+  CREATED
+  DETAILS_UPDATED
+  PRICE_CHANGED
+  STATUS_CHANGED
+  STOCK_CHANGED
+  ARCHIVED
+}
+
+model Category {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  products  Product[]
+}
+
+// Constraints in the migration that Prisma does not model: the SKU is unique
+// case-insensitively (archived rows included, so a SKU is never reused), prices
+// are not negative, and stock is never below zero, which is what makes overselling
+// impossible even if application code is wrong.
+model Product {
+  // Internal key; never exposed. The public id is "PRD-<number>".
+  id          String        @id @default(uuid())
+  number      Int           @unique @default(autoincrement())
+  name        String
+  sku         String
+  description String?
+  brand       String?
+  categoryId  String
+  // Restrict: a category that still has products cannot be removed.
+  category    Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  status      ProductStatus @default(ACTIVE)
+  price       Decimal       @db.Decimal(12, 2)
+  costPrice   Decimal?      @db.Decimal(12, 2)
+  stock       Int           @default(0)
+  // Optimistic concurrency: every write increments it, order-driven stock changes
+  // included, so a stale form can never overwrite a newer stock level.
+  version     Int           @default(1)
+  // Soft delete. An archived product is hidden from every products endpoint.
+  archivedAt  DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  events     ProductEvent[]
+  orderItems OrderItem[]
+
+  @@index([categoryId])
+  @@index([createdAt])
+}
+
+// The edit history shown on the product page. One row per change, written in the
+// same transaction as the change itself.
+model ProductEvent {
+  id        String           @id @default(uuid())
+  productId String
+  product   Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  type      ProductEventType
+  // Shape depends on the type; see src/products/product-events.ts.
+  data      Json
+  // Null for automatic changes (an order placed or cancelled); shown as "System".
+  actorId   String?
+  actor     User?            @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  createdAt DateTime         @default(now())
+
+  @@index([productId, createdAt(sort: Desc)])
 }
