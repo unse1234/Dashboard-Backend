@@ -9,3 +9,9 @@ coverage/
 .DS_Store
 
 /src/generated/prisma
+
+# Local AI tool configuration
+.agents/
+.claude/
+.windsurf/
+skills-lock.json
