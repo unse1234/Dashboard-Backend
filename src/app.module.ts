@@ -10,6 +10,7 @@ import { EmailVerifiedGuard } from './common/guards/email-verified.guard';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { validate, type Env } from './config/env.validation';
+import { OrdersModule } from './orders/orders.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
 import { UsersModule } from './users/users.module';
@@ -42,6 +43,7 @@ import { UsersModule } from './users/users.module';
     UsersModule,
     CustomersModule,
     ProductsModule,
+    OrdersModule,
   ],
   controllers: [AppController],
   providers: [

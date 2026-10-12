@@ -1,0 +1,49 @@
+import { Prisma } from '../generated/prisma/client';
+
+export interface PricedLine {
+  unitPrice: Prisma.Decimal;
+  quantity: number;
+}
+
+export interface PriceAdjustments {
+  shipping: Prisma.Decimal;
+  /** Taken off, as a positive amount. */
+  discount: Prisma.Decimal;
+  tax: Prisma.Decimal;
+}
+
+export interface OrderPrice {
+  /** Each line's quantity x unit price, in the order of the lines given. */
+  lineTotals: Prisma.Decimal[];
+  subtotal: Prisma.Decimal;
+  total: Prisma.Decimal;
+}
+
+/**
+ * Prices an order with exact decimals, never floating point:
+ * subtotal = the sum of the lines, total = subtotal + shipping - discount + tax.
+ * A discount that would take the order below zero is the caller's to reject; the
+ * database refuses a negative total as well.
+ */
+export function priceOrder(
+  lines: PricedLine[],
+  { shipping, discount, tax }: PriceAdjustments,
+): OrderPrice {
+  const lineTotals = lines.map(({ unitPrice, quantity }) =>
+    unitPrice.times(quantity),
+  );
+  const subtotal = lineTotals.reduce(
+    (sum, lineTotal) => sum.plus(lineTotal),
+    new Prisma.Decimal(0),
+  );
+  const total = subtotal.plus(shipping).minus(discount).plus(tax);
+  return { lineTotals, subtotal, total };
+}
+
+/** True when the discount is more than the order is worth before it. */
+export function exceedsOrderValue(
+  { subtotal }: Pick<OrderPrice, 'subtotal'>,
+  { shipping, discount, tax }: PriceAdjustments,
+): boolean {
+  return discount.greaterThan(subtotal.plus(shipping).plus(tax));
+}
