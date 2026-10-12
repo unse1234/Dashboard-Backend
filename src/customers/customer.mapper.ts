@@ -3,6 +3,7 @@ import type {
   OrderStatus,
   Prisma,
 } from '../generated/prisma/client';
+import { toAmount } from '../common/money';
 import { formatCustomerId, formatOrderId } from './customer-id';
 
 /** A customer as the list and the details page show it. */
@@ -66,9 +67,6 @@ export interface CustomerRow {
   totalSpent: Prisma.Decimal | string | number;
   lastOrderAt: Date | null;
 }
-
-/** NUMERIC(12,2) values are far inside the range a double holds exactly to the cent. */
-const toAmount = (value: Prisma.Decimal | string | number) => Number(value);
 
 // Each mapper lists its fields explicitly, so internal columns such as the
 // uuid never reach a response.
