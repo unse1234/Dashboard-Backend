@@ -1,14 +1,16 @@
 /**
- * Fills a development or test database with sample customers, addresses and
- * orders until a storefront supplies real ones.
+ * Fills a development or test database with a sample catalogue, customers,
+ * addresses and orders until a storefront supplies real ones. Order lines refer
+ * to catalogue products and snapshot their name, SKU and price.
  *
  *   DATABASE_URL=postgresql://.../dashboard_db_test npm run seed:dev -- --confirm
  *
  * Safety: it never reads .env (which may point at a shared database), so
  * DATABASE_URL must be set explicitly; it refuses NODE_ENV=production; it does
  * nothing without --confirm; and it refuses a database that already has
- * customers unless --reset is given, which first empties the customer and order
- * tables. The data is the same on every run.
+ * customers or products unless --reset is given, which first empties the
+ * product, customer and order tables (categories are reference data and stay).
+ * The data is the same on every run.
  */
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
@@ -19,6 +21,7 @@ import {
   type OrderStatus,
   type PaymentStatus,
   type Prisma,
+  type ProductStatus,
 } from '../generated/prisma/client';
 
 const CUSTOMER_COUNT = 60;
@@ -92,44 +95,319 @@ const PLACES = [
   { city: 'Osaka', region: 'Osaka', postalCode: '530-0001', country: 'Japan' },
   { city: 'Dublin', region: null, postalCode: null, country: 'Ireland' },
 ];
-const PRODUCTS = [
+
+interface CatalogueEntry {
+  name: string;
+  sku: string;
+  brand: string | null;
+  /** One of the categories the migration seeds. */
+  category: string;
+  priceCents: number;
+  /** Null when the cost is unknown. */
+  costCents: number | null;
+  stock: number;
+  status?: ProductStatus;
+  /** Hidden from the dashboard; no new order may include it. */
+  archived?: boolean;
+}
+
+// Spread across the seeded categories, with a few inactive, out-of-stock and
+// archived products so that every state of the lists is represented.
+const CATALOGUE: CatalogueEntry[] = [
   {
-    productId: 'PRD-1001',
-    productName: 'Ceramic Mug',
-    sku: 'MUG-001',
-    unitCents: 1450,
+    name: 'Aurora Wireless Noise-Cancelling Headphones',
+    sku: 'AUD-ANC-500-BLK',
+    brand: 'Soundcraft',
+    category: 'Electronics',
+    priceCents: 24900,
+    costCents: 13850,
+    stock: 184,
   },
   {
-    productId: 'PRD-1002',
-    productName: 'Linen Apron',
-    sku: 'APR-002',
-    unitCents: 3200,
+    name: 'Compact Mechanical Keyboard',
+    sku: 'KBD-MECH-65',
+    brand: 'Keyline',
+    category: 'Electronics',
+    priceCents: 8950,
+    costCents: 4120,
+    stock: 76,
   },
   {
-    productId: 'PRD-1003',
-    productName: 'Walnut Cutting Board',
-    sku: 'BRD-003',
-    unitCents: 5875,
+    name: '27-inch 4K Monitor',
+    sku: 'MON-4K-27',
+    brand: 'Visora',
+    category: 'Electronics',
+    priceCents: 42900,
+    costCents: 29800,
+    stock: 23,
   },
   {
-    productId: 'PRD-1004',
-    productName: 'Pour-over Kettle',
-    sku: 'KTL-004',
-    unitCents: 8900,
+    name: 'USB-C Docking Station',
+    sku: 'DOC-USBC-11',
+    brand: 'Keyline',
+    category: 'Electronics',
+    priceCents: 13900,
+    costCents: null,
+    stock: 0,
   },
   {
-    productId: 'PRD-1005',
-    productName: 'Tea Sampler',
-    sku: 'TEA-005',
-    unitCents: 2405,
+    name: 'Wireless Ergonomic Mouse',
+    sku: 'MSE-ERGO-W',
+    brand: 'Keyline',
+    category: 'Electronics',
+    priceCents: 4995,
+    costCents: 1890,
+    stock: 310,
   },
   {
-    productId: 'PRD-1006',
-    productName: 'Cast Iron Skillet',
-    sku: 'SKL-006',
-    unitCents: 6499,
+    name: 'Portable SSD 1 TB',
+    sku: 'SSD-PORT-1TB',
+    brand: null,
+    category: 'Electronics',
+    priceCents: 10900,
+    costCents: 7450,
+    stock: 58,
+    status: 'INACTIVE',
+  },
+  {
+    name: 'Pre-Seasoned Cast Iron Skillet, 12 inch',
+    sku: 'HK-CIS-12',
+    brand: 'Hearthstone',
+    category: 'Home & Kitchen',
+    priceCents: 3995,
+    costCents: 1720,
+    stock: 62,
+  },
+  {
+    name: 'Ceramic Pour-over Set',
+    sku: 'HK-POUR-SET',
+    brand: 'Hearthstone',
+    category: 'Home & Kitchen',
+    priceCents: 3400,
+    costCents: 1500,
+    stock: 140,
+  },
+  {
+    name: 'Linen Apron',
+    sku: 'HK-APR-LIN',
+    brand: null,
+    category: 'Home & Kitchen',
+    priceCents: 3200,
+    costCents: 1100,
+    stock: 95,
+  },
+  {
+    name: 'Walnut Cutting Board',
+    sku: 'HK-BRD-WLN',
+    brand: 'Oakmoor',
+    category: 'Home & Kitchen',
+    priceCents: 5875,
+    costCents: 2600,
+    stock: 41,
+  },
+  {
+    name: 'Stainless Steel Gooseneck Kettle',
+    sku: 'HK-KTL-GSN',
+    brand: 'Hearthstone',
+    category: 'Home & Kitchen',
+    priceCents: 8900,
+    costCents: 4300,
+    stock: 18,
+  },
+  {
+    name: 'Tea Sampler',
+    sku: 'HK-TEA-SMP',
+    brand: null,
+    category: 'Home & Kitchen',
+    priceCents: 2405,
+    costCents: 980,
+    stock: 0,
+  },
+  {
+    name: 'Ergonomic Mesh Office Chair with Adjustable Lumbar Support and Headrest',
+    sku: 'FUR-CHR-MESH-02',
+    brand: 'Northwind',
+    category: 'Furniture',
+    priceCents: 32900,
+    costCents: 18800,
+    stock: 9,
+  },
+  {
+    name: 'Walnut Standing Desk, 160 × 80 cm',
+    sku: 'FUR-DSK-WLN-160',
+    brand: 'Oakmoor',
+    category: 'Furniture',
+    priceCents: 89900,
+    costCents: 51200,
+    stock: 14,
+    status: 'INACTIVE',
+  },
+  {
+    name: 'Oak Bookshelf, 5 Shelves',
+    sku: 'FUR-BKS-OAK-5',
+    brand: 'Oakmoor',
+    category: 'Furniture',
+    priceCents: 21900,
+    costCents: 12400,
+    stock: 27,
+  },
+  {
+    name: 'Brass Floor Lamp',
+    sku: 'FUR-LMP-BRS',
+    brand: 'Northwind',
+    category: 'Furniture',
+    priceCents: 12000,
+    costCents: null,
+    stock: 33,
+  },
+  {
+    name: 'Storage Ottoman',
+    sku: 'FUR-OTT-STO',
+    brand: null,
+    category: 'Furniture',
+    priceCents: 14900,
+    costCents: 7600,
+    stock: 12,
+  },
+  {
+    name: 'Hardcover Notebook, 3-pack',
+    sku: 'OFF-NTB-HC3',
+    brand: 'Paperline',
+    category: 'Office Supplies',
+    priceCents: 1850,
+    costCents: 620,
+    stock: 520,
+  },
+  {
+    name: 'Fountain Pen Set',
+    sku: 'OFF-PEN-FNT',
+    brand: 'Paperline',
+    category: 'Office Supplies',
+    priceCents: 4500,
+    costCents: 1750,
+    stock: 64,
+  },
+  {
+    name: 'Desk Organizer',
+    sku: 'OFF-ORG-DSK',
+    brand: null,
+    category: 'Office Supplies',
+    priceCents: 2790,
+    costCents: 1150,
+    stock: 88,
+  },
+  {
+    name: 'Whiteboard, 90 × 60 cm',
+    sku: 'OFF-WBD-9060',
+    brand: 'Paperline',
+    category: 'Office Supplies',
+    priceCents: 6400,
+    costCents: 3100,
+    stock: 0,
+  },
+  {
+    name: 'Sticky Notes, Bulk Pack',
+    sku: 'OFF-STK-BLK',
+    brand: 'Paperline',
+    category: 'Office Supplies',
+    priceCents: 1200,
+    costCents: 380,
+    stock: 1450,
+  },
+  {
+    name: 'Trail Insulated Water Bottle, 750 ml',
+    sku: 'SPT-BTL-750-GRN',
+    brand: 'Ridgeline',
+    category: 'Sports & Outdoors',
+    priceCents: 2450,
+    costCents: 980,
+    stock: 1240,
+  },
+  {
+    name: 'Trail Running Backpack, 20 L',
+    sku: 'SPT-BPK-20',
+    brand: 'Ridgeline',
+    category: 'Sports & Outdoors',
+    priceCents: 7900,
+    costCents: 3600,
+    stock: 47,
+  },
+  {
+    name: 'Cork Yoga Mat',
+    sku: 'SPT-YGA-CRK',
+    brand: null,
+    category: 'Sports & Outdoors',
+    priceCents: 3500,
+    costCents: 1400,
+    stock: 105,
+  },
+  {
+    name: 'Rechargeable Camping Lantern',
+    sku: 'SPT-LNT-RCH',
+    brand: 'Ridgeline',
+    category: 'Sports & Outdoors',
+    priceCents: 2999,
+    costCents: 1300,
+    stock: 72,
+  },
+  {
+    name: 'Resistance Band Set',
+    sku: 'SPT-RSB-SET',
+    brand: null,
+    category: 'Sports & Outdoors',
+    priceCents: 1999,
+    costCents: 700,
+    stock: 260,
+    status: 'INACTIVE',
+  },
+  {
+    name: 'Leather Card Holder',
+    sku: 'ACC-CRD-LTH',
+    brand: 'Northwind',
+    category: 'Accessories',
+    priceCents: 3800,
+    costCents: 1500,
+    stock: 120,
+  },
+  {
+    name: 'Canvas Tote Bag',
+    sku: 'ACC-TOT-CNV',
+    brand: null,
+    category: 'Accessories',
+    priceCents: 2200,
+    costCents: 750,
+    stock: 340,
+  },
+  {
+    name: 'Adjustable Phone Stand',
+    sku: 'ACC-PHN-STD',
+    brand: 'Keyline',
+    category: 'Accessories',
+    priceCents: 1500,
+    costCents: 520,
+    stock: 410,
+  },
+  {
+    name: 'Desk Clock, Discontinued',
+    sku: 'ACC-CLK-OLD',
+    brand: null,
+    category: 'Accessories',
+    priceCents: 1900,
+    costCents: 800,
+    stock: 5,
+    archived: true,
   },
 ];
+
+/** A catalogue product as the orders need it once it has been inserted. */
+interface SeededProduct {
+  id: string;
+  number: number;
+  name: string;
+  sku: string;
+  priceCents: number;
+}
+
 const STATUSES: OrderStatus[] = [
   'DELIVERED',
   'DELIVERED',
@@ -152,8 +430,88 @@ function random(seed: number): () => number {
 }
 
 const money = (cents: number) => (cents / 100).toFixed(2);
+const dollars = (cents: number) => cents / 100;
 
-function buildData(now: Date) {
+/**
+ * Catalogue rows and their history. The first entries are the oldest, so PRD-
+ * numbers rise with creation time. Nothing here has an author: automatic
+ * history reads "System" in the dashboard.
+ */
+function buildCatalogue(now: Date, categoryIds: Map<string, string>) {
+  const products: Prisma.ProductCreateManyInput[] = [];
+  const events: Prisma.ProductEventCreateManyInput[] = [];
+
+  CATALOGUE.forEach((entry, index) => {
+    const categoryId = categoryIds.get(entry.category);
+    if (!categoryId) {
+      throw new Error(
+        `Category "${entry.category}" does not exist. Apply the migrations first.`,
+      );
+    }
+    const id = randomUUID();
+    const createdAt = new Date(
+      now.getTime() - (CATALOGUE.length - index) * 21 * DAY_MS,
+    );
+    products.push({
+      id,
+      name: entry.name,
+      sku: entry.sku,
+      brand: entry.brand,
+      categoryId,
+      status: entry.status ?? 'ACTIVE',
+      price: money(entry.priceCents),
+      costPrice: entry.costCents === null ? null : money(entry.costCents),
+      stock: entry.stock,
+      archivedAt: entry.archived ? new Date(now.getTime() - 5 * DAY_MS) : null,
+      createdAt,
+    });
+
+    const later = (days: number) =>
+      new Date(createdAt.getTime() + days * DAY_MS);
+    events.push({
+      productId: id,
+      type: 'CREATED',
+      data: {},
+      createdAt,
+    });
+    if (index % 4 === 0) {
+      events.push({
+        productId: id,
+        type: 'PRICE_CHANGED',
+        data: {
+          field: 'price',
+          from: dollars(Math.round(entry.priceCents * 1.08)),
+          to: dollars(entry.priceCents),
+        },
+        createdAt: later(30),
+      });
+    }
+    if (index % 3 === 0) {
+      events.push({
+        productId: id,
+        type: 'STOCK_CHANGED',
+        data: {
+          from: Math.max(entry.stock - 24, 0),
+          to: entry.stock,
+          reason: 'MANUAL',
+        },
+        createdAt: later(45),
+      });
+    }
+    if (entry.archived) {
+      events.push({
+        productId: id,
+        type: 'ARCHIVED',
+        data: {},
+        createdAt: new Date(now.getTime() - 5 * DAY_MS),
+      });
+    }
+  });
+
+  return { products, events };
+}
+
+function buildData(now: Date, orderable: SeededProduct[]) {
   const rand = random(20261009);
   const int = (min: number, max: number) =>
     min + Math.floor(rand() * (max - min + 1));
@@ -221,21 +579,25 @@ function buildData(now: Date) {
       const createdAt = new Date(joinedAt.getTime() + rand() * sinceJoined);
 
       let subtotal = 0;
+      let itemCount = 0;
       const lineCount = int(1, 3);
       for (let l = 0; l < lineCount; l++) {
-        const product = pick(PRODUCTS);
+        const product = pick(orderable);
         const quantity = int(1, 3);
-        const lineTotal = quantity * product.unitCents;
+        const lineTotal = quantity * product.priceCents;
         subtotal += lineTotal;
+        itemCount += quantity;
         items.push({
           id: randomUUID(),
           orderId,
-          productId: product.productId,
-          productName: product.productName,
+          position: l,
+          productId: `PRD-${product.number}`,
+          productName: product.name,
           sku: product.sku,
           quantity,
-          unitPrice: money(product.unitCents),
+          unitPrice: money(product.priceCents),
           total: money(lineTotal),
+          catalogProductId: product.id,
         });
       }
       const shipping = subtotal >= 10000 ? 0 : 799;
@@ -259,6 +621,7 @@ function buildData(now: Date) {
         customerPhone: phone,
         status,
         paymentStatus,
+        itemCount,
         subtotal: money(subtotal),
         shipping: money(shipping),
         discount: money(discount),
@@ -311,23 +674,64 @@ async function main(): Promise<void> {
   try {
     if (values.reset) {
       await prisma.$executeRawUnsafe(
-        'TRUNCATE TABLE "OrderItem", "Order", "CustomerAddress", "Customer"',
+        'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "Order", "CustomerAddress", "Customer", "Product"',
       );
-    } else if ((await prisma.customer.count()) > 0) {
+    } else if (
+      (await prisma.customer.count()) > 0 ||
+      (await prisma.product.count()) > 0
+    ) {
       throw new Error(
-        'The database already has customers. Re-run with --reset to replace them.',
+        'The database already has customers or products. Re-run with --reset to replace them.',
       );
     }
 
-    const data = buildData(new Date());
-    await prisma.$transaction([
-      prisma.customer.createMany({ data: data.customers }),
-      prisma.customerAddress.createMany({ data: data.addresses }),
-      prisma.order.createMany({ data: data.orders }),
-      prisma.orderItem.createMany({ data: data.items }),
-    ]);
+    const categories = await prisma.category.findMany({
+      select: { id: true, name: true },
+    });
+    const now = new Date();
+    const catalogue = buildCatalogue(
+      now,
+      new Map(categories.map(({ id, name }) => [name, id])),
+    );
+
+    const counts = await prisma.$transaction(async (tx) => {
+      // The products come first: orders snapshot their numbers and prices.
+      const inserted = await tx.product.createManyAndReturn({
+        data: catalogue.products,
+        select: { id: true, number: true, sku: true },
+      });
+      await tx.productEvent.createMany({ data: catalogue.events });
+
+      const bySku = new Map(CATALOGUE.map((entry) => [entry.sku, entry]));
+      const orderable: SeededProduct[] = [];
+      for (const { id, number, sku } of inserted) {
+        const entry = bySku.get(sku);
+        if (!entry) throw new Error(`Unexpected product ${sku}`);
+        if (entry.archived || (entry.status ?? 'ACTIVE') !== 'ACTIVE') continue;
+        orderable.push({
+          id,
+          number,
+          name: entry.name,
+          sku,
+          priceCents: entry.priceCents,
+        });
+      }
+
+      const data = buildData(now, orderable);
+      await tx.customer.createMany({ data: data.customers });
+      await tx.customerAddress.createMany({ data: data.addresses });
+      await tx.order.createMany({ data: data.orders });
+      await tx.orderItem.createMany({ data: data.items });
+      return {
+        products: inserted.length,
+        customers: data.customers.length,
+        addresses: data.addresses.length,
+        orders: data.orders.length,
+        lines: data.items.length,
+      };
+    });
     console.log(
-      `Seeded ${data.customers.length} customers, ${data.addresses.length} addresses, ${data.orders.length} orders and ${data.items.length} order lines.`,
+      `Seeded ${counts.products} products, ${counts.customers} customers, ${counts.addresses} addresses, ${counts.orders} orders and ${counts.lines} order lines.`,
     );
   } finally {
     await prisma.$disconnect();
