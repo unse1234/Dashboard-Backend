@@ -13,6 +13,7 @@ import type {
   AddressType,
   OrderStatus,
   PaymentStatus,
+  ProductStatus,
   Role,
 } from '../src/generated/prisma/client';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -92,7 +93,8 @@ export async function createTestApp(
 
 export async function resetDatabase(prisma: PrismaService): Promise<void> {
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "Session", "PasswordResetToken", "EmailVerificationToken", "User", "OrderItem", "Order", "CustomerAddress", "Customer" CASCADE',
+    // "Category" is reference data the migration seeds, so it is left alone.
+    'TRUNCATE TABLE "Session", "PasswordResetToken", "EmailVerificationToken", "User", "ProductEvent", "OrderEvent", "OrderItem", "Order", "Product", "CustomerAddress", "Customer" CASCADE',
   );
 }
 
@@ -237,6 +239,15 @@ export function createAddress(
   });
 }
 
+/** The product fields an order line is built from. */
+export interface LineProduct {
+  id: string;
+  number: number;
+  name: string;
+  sku: string;
+  price: { toString(): string };
+}
+
 export interface OrderOptions {
   /** The order total in USD (default 100). The subtotal is derived from it. */
   total?: number;
@@ -244,8 +255,15 @@ export interface OrderOptions {
   discount?: number;
   tax?: number;
   status?: OrderStatus;
+  /** Defaults to one that goes with `status`: paid, unpaid, or refunded when cancelled. */
   paymentStatus?: PaymentStatus;
   createdAt?: Date;
+  /**
+   * Lines of real products, snapshotted at their current price. Replaces the
+   * single placeholder line, and `total` is then derived from the lines instead.
+   * This only records the order: it does not touch the products' stock.
+   */
+  items?: { product: LineProduct; quantity: number }[];
 }
 
 const testAddress = {
@@ -263,27 +281,70 @@ const toCents = (amount: number) => Math.round(amount * 100);
 const fromCents = (cents: number) => (cents / 100).toFixed(2);
 
 /**
- * Creates an order with one line whose amounts satisfy the database checks:
- * subtotal = total - shipping + discount - tax, and the line totals the subtotal.
+ * Creates an order whose amounts satisfy the database checks. By default it has
+ * one placeholder line and subtotal = total - shipping + discount - tax; with
+ * `items` the lines come first and the total follows from them.
  */
 export function createOrder(
   prisma: PrismaService,
   customer: { id: string; name: string; email: string; phone: string | null },
   options: OrderOptions = {},
 ) {
-  const total = toCents(options.total ?? 100);
   const shipping = toCents(options.shipping ?? 0);
   const discount = toCents(options.discount ?? 0);
   const tax = toCents(options.tax ?? 0);
-  const subtotal = total - shipping + discount - tax;
+
+  const lines = options.items?.map(({ product, quantity }) => ({
+    productId: `PRD-${product.number}`,
+    productName: product.name,
+    sku: product.sku,
+    quantity,
+    unitCents: toCents(Number(product.price.toString())),
+    catalogProductId: product.id,
+  }));
+
+  const subtotal = lines
+    ? lines.reduce((sum, line) => sum + line.unitCents * line.quantity, 0)
+    : toCents(options.total ?? 100) - shipping + discount - tax;
+  const total = subtotal + shipping - discount + tax;
+
+  const itemLines = lines
+    ? lines.map(({ unitCents, ...line }, position) => ({
+        ...line,
+        unitPrice: fromCents(unitCents),
+        total: fromCents(unitCents * line.quantity),
+        position,
+      }))
+    : [
+        {
+          productId: 'PRD-1001',
+          productName: 'Test Product',
+          sku: 'TEST-001',
+          quantity: 1,
+          unitPrice: fromCents(subtotal),
+          total: fromCents(subtotal),
+          position: 0,
+        },
+      ];
+  const status = options.status ?? 'DELIVERED';
+  // A payment status that goes with the status, as the database requires.
+  const paymentStatus =
+    options.paymentStatus ??
+    (status === 'CANCELLED'
+      ? 'REFUNDED'
+      : status === 'PENDING'
+        ? 'PENDING'
+        : 'PAID');
+
   return prisma.order.create({
     data: {
       customerId: customer.id,
       customerName: customer.name,
       customerEmail: customer.email,
       customerPhone: customer.phone,
-      status: options.status ?? 'DELIVERED',
-      paymentStatus: options.paymentStatus ?? 'PAID',
+      status,
+      paymentStatus,
+      itemCount: itemLines.reduce((units, line) => units + line.quantity, 0),
       subtotal: fromCents(subtotal),
       shipping: fromCents(shipping),
       discount: fromCents(discount),
@@ -292,16 +353,52 @@ export function createOrder(
       shippingAddress: testAddress,
       billingAddress: testAddress,
       ...(options.createdAt ? { createdAt: options.createdAt } : {}),
-      items: {
-        create: {
-          productId: 'PRD-1001',
-          productName: 'Test Product',
-          sku: 'TEST-001',
-          quantity: 1,
-          unitPrice: fromCents(subtotal),
-          total: fromCents(subtotal),
-        },
-      },
+      items: { create: itemLines },
+    },
+  });
+}
+
+export interface ProductOptions {
+  name?: string;
+  sku?: string;
+  description?: string | null;
+  brand?: string | null;
+  /** The name of one of the seeded categories (default "Electronics"). */
+  category?: string;
+  status?: ProductStatus;
+  price?: number | string;
+  costPrice?: number | string | null;
+  stock?: number;
+  archived?: boolean;
+  createdAt?: Date;
+}
+
+/** One of the categories the migration seeds. */
+export function getCategory(prisma: PrismaService, name = 'Electronics') {
+  return prisma.category.findUniqueOrThrow({ where: { name } });
+}
+
+let productSeq = 0;
+
+export async function createProduct(
+  prisma: PrismaService,
+  options: ProductOptions = {},
+) {
+  productSeq += 1;
+  const category = await getCategory(prisma, options.category);
+  return prisma.product.create({
+    data: {
+      name: options.name ?? `Product ${productSeq}`,
+      sku: options.sku ?? `SKU-${productSeq}`,
+      description: options.description ?? null,
+      brand: options.brand ?? null,
+      categoryId: category.id,
+      status: options.status ?? 'ACTIVE',
+      price: options.price ?? '10.00',
+      costPrice: options.costPrice ?? null,
+      stock: options.stock ?? 10,
+      archivedAt: options.archived ? new Date() : null,
+      ...(options.createdAt ? { createdAt: options.createdAt } : {}),
     },
   });
 }
