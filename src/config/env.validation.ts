@@ -3,6 +3,7 @@ import { plainToInstance, Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
+  IsFQDN,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -119,9 +120,16 @@ export class EnvironmentVariables {
   @IsEnum(CookieSameSite)
   COOKIE_SAMESITE: CookieSameSite = CookieSameSite.Strict;
 
+  /** Browsers drop the cookie unless this matches the API host; leave unset for host-only. */
   @Transform(emptyToUndefined)
   @IsOptional()
-  @IsString()
+  @IsFQDN(
+    {},
+    {
+      message:
+        'COOKIE_DOMAIN must be a domain name such as example.com, or empty to scope the cookie to the API host',
+    },
+  )
   COOKIE_DOMAIN?: string;
 
   @IsInt()

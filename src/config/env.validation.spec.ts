@@ -32,6 +32,15 @@ describe('env validation', () => {
     expect(env.COOKIE_DOMAIN).toBeUndefined();
   });
 
+  it('rejects a cookie domain that is not a domain name', () => {
+    expect(() =>
+      validate({ ...valid, COOKIE_DOMAIN: 'a9b8db1464f3e5e2b3771d7f73dbbf73' }),
+    ).toThrow(/COOKIE_DOMAIN must be a domain name/);
+    expect(
+      validate({ ...valid, COOKIE_DOMAIN: 'example.com' }).COOKIE_DOMAIN,
+    ).toBe('example.com');
+  });
+
   it('requires SMTP settings when the smtp transport is selected', () => {
     expect(() => validate({ ...valid, MAIL_TRANSPORT: 'smtp' })).toThrow(
       /SMTP_HOST/,
