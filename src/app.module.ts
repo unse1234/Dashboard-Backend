@@ -11,6 +11,7 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { validate, type Env } from './config/env.validation';
 import { PrismaModule } from './prisma/prisma.module';
+import { ProductsModule } from './products/products.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -40,6 +41,7 @@ import { UsersModule } from './users/users.module';
     AuthModule,
     UsersModule,
     CustomersModule,
+    ProductsModule,
   ],
   controllers: [AppController],
   providers: [
