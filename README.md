@@ -64,9 +64,21 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | DELETE | `/users/:id` | ADMIN | Soft delete, `204`; not yourself; the last active admin is protected |
 | GET | `/customers` | ADMIN, STAFF | `?page=1&pageSize=20&search&sortBy&sortOrder` (`pageSize` ≤ 100; `search` matches name, email or phone, case-insensitive, or a customer id such as `CUS-1001` or `1001`; `sortBy` is `id`, `name`, `email`, `totalOrders`, `totalSpent` or `joinedAt`, `sortOrder` is `asc` (default) or `desc`; newest first without `sortBy`) → `{ data, meta: { page, pageSize, total, totalPages } }` |
 | GET | `/customers/:customerId` | ADMIN, STAFF | `{ customer, addresses, recentOrders }` (the 3 latest orders); `404` if unknown, `400` if `:customerId` is not like `CUS-1001` |
+| GET | `/categories` | ADMIN, STAFF | `{ data: [{ id, name }] }`, by name |
+| GET | `/products` | ADMIN, STAFF | `?page=1&pageSize=20&search&categoryId&status` (`pageSize` ≤ 100; `search` matches name or SKU, case-insensitive, or a product id such as `PRD-1001` or `1001`; `categoryId` is a category uuid; `status` is `ACTIVE`, `INACTIVE` or `OUT_OF_STOCK`; newest first) → `{ data, meta: { page, pageSize, total, totalPages } }`. Archived products are never listed |
+| GET | `/products/:productId` | ADMIN, STAFF | One product; `404` if unknown or archived, `400` if `:productId` is not like `PRD-1001` |
+| GET | `/products/:productId/history` | ADMIN, STAFF | `{ data: [{ id, change, occurredAt, actor }] }`, newest first, at most 50; `actor` is `null` for automatic changes |
+| POST | `/products` | ADMIN, STAFF | `{ name, sku, categoryId, price, brand?, description?, status?, costPrice?, stock? }` → `201`; `409` if the SKU is taken (any case, archived products included), `400` for an unknown category |
+| PATCH | `/products/:productId` | ADMIN, STAFF | `{ version, ...fields }`; `version` is the one the editor loaded. Only fields that differ are written. `409` when the product changed since that version, or the SKU is taken. `brand`, `description` and `costPrice` can be cleared with `null` |
+| POST | `/products/archive` | ADMIN | `{ productIds: ["PRD-1001", ...] }` (1–100) → `200 { archived }`, the number archived by this call; unknown or already archived ids are skipped, so repeating it is harmless |
+| GET | `/orders` | ADMIN, STAFF | `?page=1&pageSize=20&search&status&paymentStatus&customerId&sortBy&sortOrder` (`pageSize` ≤ 100; `search` matches the customer's name or email, case-insensitive, or an order id such as `ORD-10001` or `10001`; `status` is `PENDING`, `PROCESSING`, `SHIPPED`, `DELIVERED` or `CANCELLED`; `paymentStatus` is `PENDING`, `PAID` or `REFUNDED`; `customerId` is like `CUS-1001`; `sortBy` is `id`, `customer`, `createdAt`, `itemCount`, `total`, `paymentStatus` or `status`, `sortOrder` is `asc` (default) or `desc`; newest first without `sortBy`) → `{ data, meta: { page, pageSize, total, totalPages } }` |
+| GET | `/orders/:orderId` | ADMIN, STAFF | The order with its lines, amounts and address snapshots; `404` if unknown, `400` if `:orderId` is not like `ORD-10001` |
+| POST | `/orders` | ADMIN | Places an order. Needs an `Idempotency-Key` header. `{ customerId, items: [{ productId, quantity }], shippingAddress, billingAddress?, shipping?, discount?, tax?, paymentStatus? }` → `201` with the order. Prices come from the products, never from the request. `409` when there is not enough stock (nothing is taken) or the key was used for a different order |
+| PATCH | `/orders/:orderId/status` | ADMIN, STAFF | `{ status }`. Moves along the lifecycle below; `409` with the reason otherwise. Asking for the status it already has is a no-op `200`. Cancelling returns the stock |
+| PATCH | `/orders/:orderId/payment-status` | ADMIN, STAFF | `{ paymentStatus: "PAID" }` records that the payment arrived; repeating it is harmless; `409` for a cancelled order |
 
 Unverified users can sign in and use the `/auth/*` account routes; everything else
-(`/users`, `/customers`) requires a verified email. Passwords: 12–128 characters with a
+(`/users`, `/customers`, `/products`, `/categories`, `/orders`) requires a verified email. Passwords: 12–128 characters with a
 lowercase letter, an uppercase letter and a number.
 
 ### How the frontend must use it
@@ -124,6 +136,90 @@ There is no storefront yet, so data comes from the dev seed (see Commands).
 > **Deploying:** migration `20261009130000_customers_and_orders` only adds tables. Deploy it
 > after `20261009120000_user_soft_delete`.
 
+### Products
+
+A product is one sellable unit: one SKU, one price and one stock count (there are no variants).
+Responses use the public id `PRD-<number>`; internal uuids are never returned. Prices are
+numbers in USD with at most two decimals, stored as `NUMERIC(12,2)`. Categories are seeded by a
+migration; there is no category management yet.
+
+- **Status.** A product is `ACTIVE` or `INACTIVE`. "Out of stock" is not stored: it is an
+  active product whose stock is 0, so it can never drift from the stock.
+- **Archive, not delete.** The dashboard's "Delete" archives: the product disappears from every
+  products endpoint (`404`), but is never removed, because orders refer to it. The SKU of an
+  archived product stays reserved, so a SKU is never reassigned. Orders keep their own snapshot
+  of the product's name, SKU and price, so archiving or editing a product never rewrites them.
+- **Concurrent edits.** Every write, including stock moved by an order, increments `version`.
+  `PATCH` must send the version it loaded and gets `409` if the product has changed since, so a
+  stale form can never overwrite a newer stock level. A save that changes nothing is
+  acknowledged without a new version.
+- **History.** Each change is recorded in the same transaction as the change, with who made it
+  (`null`, shown as "System", for automatic changes), and phrased for the History tab.
+- **Database guarantees.** Stock is never negative, prices are never negative, and SKUs are
+  unique ignoring case.
+
+> **Deploying:** migration `20261012100000_products_and_inventory` adds tables, one nullable
+> column and foreign key on `OrderItem` (existing lines keep `NULL`), and inserts the six
+> default categories. Deploy it after `20261009130000_customers_and_orders`.
+
+### Orders
+
+Orders keep **snapshots** of the customer, both addresses and every line (product id, name,
+SKU and unit price) as they were when the order was placed, so an order reads the same
+whatever later happens to the customer or the products. Only its status and payment status
+ever change afterwards. Amounts are `NUMERIC(12,2)` USD, computed with exact decimals.
+
+**Lifecycle.** Forward only; shipping may skip `PROCESSING`; `DELIVERED` and `CANCELLED` are final.
+
+| From | May become |
+|---|---|
+| `PENDING` | `PROCESSING`, `SHIPPED`, `CANCELLED` |
+| `PROCESSING` | `SHIPPED`, `CANCELLED` |
+| `SHIPPED` | `DELIVERED` |
+| `DELIVERED`, `CANCELLED` | nothing |
+
+An order can only be `SHIPPED` or `DELIVERED` once its payment is `PAID`. Cancelling an order
+that was `PAID` records the payment as `REFUNDED` (the refund itself is made outside the
+dashboard; returns and refunds as flows are not implemented). The database enforces which
+statuses and payment statuses go together. Every change is recorded in `OrderEvent` with who
+made it.
+
+**Stock.** Placing an order takes its units from the products' stock in the same transaction
+that creates it, and cancelling it puts them back. There is no reservation step: nothing here
+takes payment, so an unpaid order simply holds its stock until it is cancelled.
+
+- The check and the change are one conditional `UPDATE ... WHERE stock >= quantity`, so two
+  orders for the last unit cannot both succeed: the second waits for the first's row lock, finds
+  no stock left, and is refused with `409` having taken nothing. The `CHECK (stock >= 0)` on the
+  column is the backstop.
+- Products are locked in a fixed order, so orders over overlapping products cannot deadlock.
+- Every status change is a compare-and-set on the status the rules were checked against. Of
+  several simultaneous cancellations exactly one changes the order and returns the stock; the
+  others find it cancelled and are acknowledged with nothing done twice.
+- Stock moved by an order bumps the product's `version` and appears in its history as "System".
+
+**Retrying.** `POST /orders` requires an `Idempotency-Key` header (8 to 100 letters, digits,
+`-` or `_`; a UUID works). The same key with the same request returns the order already placed
+(still `201`), with no second deduction, however many times and however concurrently it is
+sent. The same key with a different request is refused with `409`. Generate one key per order.
+
+There is no dashboard screen that places orders: `POST /orders` is for a storefront or a
+script, and is administrators-only until a storefront has credentials of its own. A browser
+client calling it cross-origin would need `Idempotency-Key` added to the CORS allowed headers.
+
+> **Deploying:** migration `20261012110000_order_lifecycle` adds columns with defaults and
+> backfills `itemCount`, then adds a CHECK that the status and payment status go together. It
+> **fails if existing orders break that rule**, so check first:
+>
+> ```sql
+> SELECT count(*) FROM "Order" WHERE NOT (
+>   ("status" IN ('SHIPPED','DELIVERED') AND "paymentStatus" = 'PAID')
+>   OR ("status" = 'CANCELLED' AND "paymentStatus" IN ('PENDING','REFUNDED'))
+>   OR ("status" IN ('PENDING','PROCESSING') AND "paymentStatus" IN ('PENDING','PAID')));
+> ```
+>
+> Deploy it after `20261012100000_products_and_inventory`.
+
 ## Security model
 
 - Passwords: Argon2id. Unknown accounts, wrong passwords, disabled accounts and invited
@@ -157,10 +253,11 @@ or a local catcher such as Mailpit before relying on it.
 - `npm test` — unit tests.
 - `npm run test:e2e` — HTTP + database integration tests (see below).
 - `npm run admin:create -- --email … --name …` — bootstrap the first admin.
-- `npm run seed:dev -- --confirm [--reset]` — sample customers, addresses and orders. It
-  never reads `.env`: set `DATABASE_URL` explicitly to a development or test database. It
-  refuses `NODE_ENV=production`, does nothing without `--confirm`, and refuses a database that
-  already has customers unless `--reset` (which empties the customer and order tables first).
+- `npm run seed:dev -- --confirm [--reset]` — a sample catalogue, customers, addresses and
+  orders (order lines refer to the catalogue's products). It never reads `.env`: set
+  `DATABASE_URL` explicitly to a development or test database. It refuses `NODE_ENV=production`,
+  does nothing without `--confirm`, and refuses a database that already has customers or
+  products unless `--reset` (which empties the product, customer and order tables first).
 
 ## Testing
 
@@ -175,6 +272,40 @@ Create that database once (`CREATE DATABASE dashboard_db_test;`). Migrations are
 automatically before the suite and tables are cleared between tests. Jest runs with
 `--experimental-vm-modules` (already in the npm scripts) because `@nestjs/config` and
 `@nestjs/jwt` are ESM-only.
+
+## Performance
+
+Measured on a local PostgreSQL 18 with 5,000 customers, 5,000 products, 50,000 orders and
+100,000 order lines, through the compiled server (milliseconds, 15 requests each):
+
+| Request | p50 | p95 |
+|---|---|---|
+| Orders, newest first | 33 | 43 |
+| Orders, status and payment filter | 19 | 23 |
+| Orders, sort by total / by customer | 84 / 106 | 105 / 125 |
+| Orders, last page (offset 50,000) | 133 | 308 |
+| Orders, search by name, email or id | 200–235 | 260–490 |
+| One order with its lines | 8 | 30 |
+| Products, any list, filter or search | 9–20 | 11–26 |
+| Customers by total spent (existing) | 121 | 154 |
+
+Every list is one `count` and one page query; nothing queries per row. The one slow case is
+text search (`ILIKE '%term%'`), which cannot use a plain index and scans the table. That is
+acceptable for a back office at this size, and it is not worth requiring an extension before it
+is needed. **When order search gets slow** (tens of thousands of orders), add trigram indexes in a
+migration. Prisma does not model them, so write the SQL by hand, like the other raw objects:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX "Order_customerName_trgm" ON "Order" USING gin ("customerName" gin_trgm_ops);
+CREATE INDEX "Order_customerEmail_trgm" ON "Order" USING gin ("customerEmail" gin_trgm_ops);
+```
+
+On the same data this took the three search cases to 7–19 ms (p95 21 ms), with the planner
+combining the trigram indexes and the order-number index. The same indexes apply to
+`Product("name", "sku")` and `Customer("name", "email", "phone")` if those grow. If sorting
+customers by orders or spend gets slow, the other path is storing the three statistics on
+`Customer` and keeping them in the order transactions.
 
 ## Deployment notes
 
@@ -199,7 +330,9 @@ automatically before the suite and tables are cleared between tests. Jest runs w
 - `src/auth/` — login, sessions, tokens, password recovery, verification.
 - `src/users/` — admin user management and invitations.
 - `src/customers/` — read-only customers list and details.
+- `src/products/` — categories and the product catalogue (list, details, history, create, edit, archive); `inventory.ts` takes and returns stock.
+- `src/orders/` — orders: list, details, placing (idempotent, takes stock), status and payment changes.
 - `src/mail/` — mail abstraction with console and SMTP transports.
-- `src/common/` — guards, decorators, validators, crypto helpers.
+- `src/common/` — guards, decorators, validators, crypto helpers, public ids, money.
 - `src/scripts/create-admin.ts` — first-admin bootstrap. `src/scripts/seed-dev-data.ts` — dev seed.
 - `prisma/` — schema and migrations. `test/` — e2e tests and helpers.
