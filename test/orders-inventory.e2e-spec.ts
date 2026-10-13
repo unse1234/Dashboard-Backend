@@ -491,6 +491,36 @@ describe('Orders and stock (e2e)', () => {
         expect(await ctx.prisma.productEvent.count()).toBe(0);
       });
 
+      it('refuses an order too large for the database, with a 400, and takes nothing', async () => {
+        const products = [];
+        for (let i = 0; i < 10; i++) {
+          products.push(
+            await createProduct(ctx.prisma, {
+              sku: `BIG-${i}`,
+              price: '1000000.00',
+              stock: 1000,
+            }),
+          );
+        }
+        const customer = await createCustomer(ctx.prisma);
+
+        // 10 x 1000 x 1,000,000 is 10,000,000,000: one past what NUMERIC(12,2) holds.
+        const res = await place(
+          orderFor(
+            customer,
+            products.map((product) => ({ product, quantity: 1000 })),
+          ),
+        ).expect(400);
+
+        expect(res.body.message).toBe(
+          'An order can be worth at most 9,999,999,999.99',
+        );
+        for (const product of products)
+          expect(await stockOf(product)).toBe(1000);
+        expect(await ctx.prisma.order.count()).toBe(0);
+        expect(await ctx.prisma.productEvent.count()).toBe(0);
+      });
+
       it('rolls back the stock when the discount is more than the order is worth', async () => {
         const mug = await createProduct(ctx.prisma, { price: '10.00' });
         const customer = await createCustomer(ctx.prisma);

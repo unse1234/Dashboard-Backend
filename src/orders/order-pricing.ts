@@ -60,3 +60,15 @@ export function commonCurrency(
   if (first === undefined) return null;
   return currencies.every((currency) => currency === first) ? first : null;
 }
+
+/**
+ * The most an order's subtotal or total can be: what the NUMERIC(12,2) columns
+ * hold. Checked before anything is written, so a large bag is refused cleanly
+ * instead of failing inside the database.
+ */
+export const MAX_ORDER_AMOUNT = new Prisma.Decimal('9999999999.99');
+
+/** True when an amount is more than an order can record. */
+export function exceedsMaxOrderAmount(amount: Prisma.Decimal): boolean {
+  return amount.greaterThan(MAX_ORDER_AMOUNT);
+}

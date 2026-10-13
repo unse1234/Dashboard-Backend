@@ -33,7 +33,12 @@ import {
   describeInvalidTransition,
   paymentStatusAfter,
 } from './order-lifecycle';
-import { commonCurrency, exceedsOrderValue, priceOrder } from './order-pricing';
+import {
+  commonCurrency,
+  exceedsMaxOrderAmount,
+  exceedsOrderValue,
+  priceOrder,
+} from './order-pricing';
 import {
   orderDetailSelect,
   toOrderDto,
@@ -59,6 +64,8 @@ export const KEY_REUSED_MESSAGE =
   'This Idempotency-Key was already used for a different order';
 export const MIXED_CURRENCY_MESSAGE =
   'All products in an order must be priced in the same currency';
+export const TOO_LARGE_MESSAGE =
+  'An order can be worth at most 9,999,999,999.99';
 
 // ORDER BY expressions per sort column. Only these constants ever reach the SQL
 // as raw text; everything that comes from the request is a bound parameter.
@@ -301,6 +308,14 @@ export class OrdersService {
         throw new BadRequestException(
           "The discount can't be more than the order is worth",
         );
+      }
+      // Before the insert, so a big order is refused cleanly (and the stock it
+      // took rolled back) instead of failing inside the database.
+      if (
+        exceedsMaxOrderAmount(price.subtotal) ||
+        exceedsMaxOrderAmount(price.total)
+      ) {
+        throw new BadRequestException(TOO_LARGE_MESSAGE);
       }
 
       const order = await tx.order.create({
