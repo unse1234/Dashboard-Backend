@@ -78,6 +78,8 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | PATCH | `/orders/:orderId/payment-status` | ADMIN, STAFF | `{ paymentStatus: "PAID" }` records that the payment arrived; repeating it is harmless; `409` for a cancelled order |
 | GET | `/storefront/products` | public | `?page=1&pageSize=20&search&categoryId&sort` (`page` ≤ 10000, `pageSize` ≤ 100; `search` matches name, subtitle or brand, case-insensitive, `%` and `_` literal; `sort` is `newest` (default), `price_asc`, `price_desc` or `name`, each with a stable tie-break) → `{ data, meta: { page, pageSize, total, totalPages } }`. Any other parameter is `400` |
 | GET | `/storefront/products/:productId` | public | One visible product. Unknown, malformed, switched-off, archived and not-priced-in-PKR ids are the same `404` |
+| POST | `/storefront/bag/quote` | public | `{ items: [{ productId, quantity }], action?: { type, productId, quantity? } }` → `200 { currency, items, subtotal, lineCount, unitCount, hasIssues }`. `type` is `add`, `increment`, `decrement`, `set` or `remove`. The server merges, counts and prices; nothing is stored or reserved. See the section below |
+| POST | `/storefront/checkout/quote` | public | `{ items, shippingAddress: { recipientName, addressLine1, addressLine2?, city, region, postalCode?, country, phone? } }` → `200 { currency, paymentMethod: "COD", items, subtotal, shipping, tax, discount, total, quoteToken, expiresAt }`. `409` (with `issues`) when a line cannot be bought; `400 UNSUPPORTED_DESTINATION` outside Pakistan |
 | GET | `/storefront/catalog-readiness` | ADMIN, STAFF | `{ currency, eligible, excludedCount, excluded: [{ id, name, currency, price }] }`: the active products the storefront hides because they are not priced in PKR (first 100) |
 
 Unverified users can sign in and use the `/auth/*` account routes; everything else
@@ -116,6 +118,42 @@ DTOs and projection; the dashboard's `/products` routes stay behind authenticati
 - **Work happens on the server.** Search, category filter, sort and pagination are one database
   query; the client renders the page it is given and its `meta`.
 - **Limits.** 300 requests a minute per client address on the two public reads.
+
+### The bag and checkout quotes
+
+There is no cart table and no session. The client keeps the bag as a list of `{ productId,
+quantity }` and sends it to `POST /storefront/bag/quote` on every change; the server answers with
+the canonical bag, each line priced, and the counts. The client does no arithmetic: it sends what
+the shopper did (`action`) and renders what comes back.
+
+- **Actions.** `add` (quantity defaults to 1, merges into an existing line), `increment`,
+  `decrement` (a line that reaches zero leaves the bag), `set` (an exact quantity, 1 or more) and
+  `remove`. `add`, `increment` and `set` create the line if it is missing; `decrement` and `remove`
+  of a product that is not there change nothing, so a double click is harmless. A quantity is only
+  accepted with `add` and `set`.
+- **Refused actions.** An action that would put something that cannot be bought into the bag is
+  `409` and changes nothing: `PRODUCT_UNAVAILABLE` (not for sale) or `INSUFFICIENT_STOCK` (not that
+  many), with the `productId`. Taking away is always allowed.
+- **Lines that went bad.** A product that stops being buyable after it was added is not an error:
+  its line comes back with `issue` set (`PRODUCT_UNAVAILABLE`, with `product: null` and no price,
+  or `INSUFFICIENT_STOCK`), `hasIssues` is `true`, and checkout is blocked until the shopper removes
+  or reduces it. The response never says how many are left.
+- **Invalid bags.** `400 INVALID_BAG`: a product repeated (in any letter case), a quantity outside
+  1-1000 once merged, more than 100 products. `400 ORDER_TOO_LARGE`: worth more than
+  9,999,999,999.99. Prices, totals, charges and currency in the request are refused.
+- **The checkout quote** prices the bag with shipping, tax and discount explicitly **zero** (a demo
+  setting, kept in one place: `orders/storefront/quote-claims.ts`) and signs the result. It
+  creates no customer, order, reservation or cart.
+- **`quoteToken`.** Opaque and stateless: the items (in id order), their unit prices, the
+  destination country and province, and the amounts, signed with HMAC-SHA256 under a key derived
+  from `JWT_ACCESS_SECRET` (not the access-token key itself). The client stores and echoes it; it
+  cannot make or change one. It lasts `QUOTE_TTL_MINUTES` (default 30). Placing the order with it
+  is the next piece of the storefront.
+- **Address.** Pakistan only: `country` is `PK` or `Pakistan`; anything else is
+  `UNSUPPORTED_DESTINATION`. The recipient, street, city and province are required; the postal code,
+  when given, is five digits; a phone, when given, must be a Pakistani mobile or landline in any of
+  the usual spellings (`0300 1234567`, `+92 300 1234567`, `042 35761234`).
+- **Errors.** Business refusals carry a `code` next to the usual `statusCode`, `error` and `message`.
 
 ### Deactivating and deleting users
 
