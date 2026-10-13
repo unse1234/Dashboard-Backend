@@ -17,6 +17,7 @@ export const NAME_MIN_LENGTH = 2;
 export const NAME_MAX_LENGTH = 120;
 export const SKU_MAX_LENGTH = 64;
 export const BRAND_MAX_LENGTH = 80;
+export const CATEGORY_NAME_MAX_LENGTH = 80;
 export const DESCRIPTION_MAX_LENGTH = 2000;
 export const PRICE_MAX = 1_000_000;
 export const STOCK_MAX = 1_000_000;

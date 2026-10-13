@@ -51,14 +51,23 @@ describe('Product imports (e2e)', () => {
     admin = (await login(ctx.app, 'imports-admin@example.com')).accessToken;
     staff = (await login(ctx.app, 'imports-staff@example.com')).accessToken;
   });
+  // The migration's categories are reference data; imports add more, so drop
+  // the ones these tests made (their products are gone by then).
+  const NEW_CATEGORY_PREFIX = 'E2E Import ';
+  const removeImportedCategories = () =>
+    ctx.prisma.category.deleteMany({
+      where: { name: { startsWith: NEW_CATEGORY_PREFIX } },
+    });
   afterAll(async () => {
     await resetDatabase(ctx.prisma);
+    await removeImportedCategories();
     await ctx.close();
   });
   beforeEach(async () => {
     await ctx.prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "ImportJob", "ProductEvent", "Product" CASCADE',
     );
+    await removeImportedCategories();
   });
 
   it('exposes only a header-only CSV template and requires authentication', async () => {
@@ -133,7 +142,7 @@ describe('Product imports (e2e)', () => {
     const preview = await upload(
       csv([
         `Valid Item,IMP-GOOD,${category.name},12.50,,,,,`,
-        `Bad Item,IMP-BAD,Unknown category,12.50,,,,,`,
+        `Bad Item,IMP-BAD,${category.name},not-a-price,,,,,`,
       ]),
     ).expect(201);
     expect(preview.body.job).toMatchObject({
@@ -157,8 +166,36 @@ describe('Product imports (e2e)', () => {
       .get(`/imports/${id}/errors?format=csv`)
       .set(bearer(admin))
       .expect(200);
-    expect(report.text).toContain('UNKNOWN_CATEGORY');
+    expect(report.text).toContain('INVALID_MONEY');
     expect(report.text).not.toContain('IMP-BAD');
+  });
+
+  it('creates a category the catalogue does not have, once, and reuses it', async () => {
+    const name = `${NEW_CATEGORY_PREFIX}Garden`;
+    const before = await ctx.prisma.category.count();
+    const preview = await upload(
+      csv([
+        `Spade,IMP-NEW-1,${name},20,,,,,`,
+        `Rake,IMP-NEW-2,${name.toLowerCase()},15,,,,,`,
+      ]),
+    ).expect(201);
+    expect(preview.body.job).toMatchObject({ status: 'READY', validRows: 2 });
+    // Validating creates nothing.
+    expect(await ctx.prisma.category.count()).toBe(before);
+
+    await http()
+      .post(`/imports/${preview.body.job.id}/confirm`)
+      .set(bearer(admin))
+      .send({ schemaVersion: 1, previewHash: preview.body.job.previewHash })
+      .expect(200);
+
+    expect(await ctx.prisma.category.count()).toBe(before + 1);
+    const created = await ctx.prisma.category.findUniqueOrThrow({
+      where: { name },
+    });
+    expect(
+      await ctx.prisma.product.count({ where: { categoryId: created.id } }),
+    ).toBe(2);
   });
 
   it('conceals another staff member’s job but allows an admin to inspect it', async () => {
@@ -544,7 +581,10 @@ describe('Product imports (e2e)', () => {
         csv([`Mug,H-1,${category.name},1,,,,,`]),
         staff,
       ).expect(201);
-      await upload(csv([`Bad,H-2,Nowhere,1,,,,,`]), staff).expect(201);
+      await upload(
+        csv([`Bad,H-2,${category.name},not-a-price,,,,,`]),
+        staff,
+      ).expect(201);
       await upload(
         csv([`Admin mug,H-3,${category.name},1,,,,,`]),
         admin,
@@ -760,7 +800,10 @@ describe('Product imports (e2e)', () => {
     it('expires the diagnostic report separately from the preview', async () => {
       const category = await getCategory(ctx.prisma);
       const preview = await upload(
-        csv([`Bad,R-1,Unknown,1,,,,,`, `Mug,R-2,${category.name},1,,,,,`]),
+        csv([
+          `Bad,R-1,${category.name},not-a-price,,,,,`,
+          `Mug,R-2,${category.name},1,,,,,`,
+        ]),
       ).expect(201);
       const id = preview.body.job.id as string;
       await ctx.prisma.importJob.update({

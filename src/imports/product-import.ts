@@ -5,6 +5,7 @@ import type { Db } from '../prisma/prisma.service';
 import { CreateProductDto } from '../products/dto/create-product.dto';
 import {
   BRAND_MAX_LENGTH,
+  CATEGORY_NAME_MAX_LENGTH,
   DESCRIPTION_MAX_LENGTH,
   NAME_MAX_LENGTH,
   NAME_MIN_LENGTH,
@@ -24,6 +25,35 @@ import type {
 const amountPattern = /^\d+(?:\.\d{1,2})?$/;
 const integerPattern = /^\d+$/;
 const MONEY_MESSAGE = `Use an amount from 0 to ${PRICE_MAX} with at most two decimals.`;
+/**
+ * Stands in for the id of a category the import is about to create, so the row
+ * still passes the product DTO's `@IsUUID()` check. It is never stored.
+ */
+const NEW_CATEGORY_PLACEHOLDER_ID = '00000000-0000-4000-8000-000000000000';
+
+interface CategoryRef {
+  id: string;
+  name: string;
+}
+
+/**
+ * An exact name wins; otherwise a case-insensitive match is used, so
+ * "electronics" lands in "Electronics" instead of creating a near-duplicate.
+ */
+function categoryLookup(categories: CategoryRef[]) {
+  const exact = new Map(
+    categories.map((category) => [category.name, category]),
+  );
+  const folded = new Map<string, CategoryRef>();
+  for (const category of [...categories].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  )) {
+    const key = category.name.toLowerCase();
+    if (!folded.has(key)) folded.set(key, category);
+  }
+  return (name: string): CategoryRef | undefined =>
+    exact.get(name) ?? folded.get(name.toLowerCase());
+}
 
 function valueOrEmpty(value: string | undefined): string {
   return (value ?? '').trim();
@@ -63,6 +93,43 @@ async function skuKeys(db: Db, skus: string[]): Promise<Map<string, string>> {
   return new Map(result.map((row) => [row.sku, row.key]));
 }
 
+/**
+ * Creates the categories the file introduced and returns the rows ready for
+ * `createProductsInTransaction`. Run it inside the import's transaction, so a
+ * failed import leaves no category behind.
+ */
+export async function withCategoryIds(
+  db: Db,
+  rows: ValidProductRow[],
+): Promise<
+  (Omit<ValidProductRow['dto'], 'categoryId'> & { categoryId: string })[]
+> {
+  const missing = [
+    ...new Set(
+      rows
+        .filter((row) => row.dto.categoryId === null)
+        .map((row) => row.categoryName),
+    ),
+  ];
+  const created = new Map<string, string>();
+  if (missing.length > 0) {
+    await db.category.createMany({
+      data: missing.map((name) => ({ name })),
+      skipDuplicates: true,
+    });
+    const found = await db.category.findMany({
+      where: { name: { in: missing } },
+      select: { id: true, name: true },
+    });
+    for (const category of found) created.set(category.name, category.id);
+  }
+  return rows.map(({ dto, categoryName }) => {
+    const categoryId = dto.categoryId ?? created.get(categoryName);
+    if (!categoryId) throw new Error('A category could not be resolved.');
+    return { ...dto, categoryId };
+  });
+}
+
 export async function analyzeProductRows(
   parsed: ParsedProductCsv,
   db: Db,
@@ -74,9 +141,11 @@ export async function analyzeProductRows(
   const categories = await db.category.findMany({
     select: { id: true, name: true },
   });
-  const byCategory = new Map(
-    categories.map((category) => [category.name, category.id]),
-  );
+  const findCategory = categoryLookup(categories);
+  // Lower-cased name -> the spelling the file used first, for categories that
+  // do not exist yet. "Toys" and "toys" in one file become one new category.
+  const newCategoryNames = new Map<string, string>();
+  const categoryNameByRow = new Map<number, string>();
   const rows: ProductImportRow[] = [];
   const allIssues: RowIssue[] = [];
 
@@ -116,16 +185,28 @@ export async function analyzeProductRows(
         ),
       );
     }
-    if (values.category && !byCategory.has(values.category)) {
-      issues.push(
-        issue(
-          rowNumber,
-          'category',
-          'UNKNOWN_CATEGORY',
-          'Use an existing category name.',
-        ),
-      );
+    // A name no category has yet is created when the import is confirmed.
+    const existingCategory = values.category
+      ? findCategory(values.category)
+      : undefined;
+    let categoryName = existingCategory?.name ?? values.category;
+    if (values.category && !existingCategory) {
+      if (values.category.length > CATEGORY_NAME_MAX_LENGTH) {
+        issues.push(
+          issue(
+            rowNumber,
+            'category',
+            'TOO_LONG',
+            `Use at most ${CATEGORY_NAME_MAX_LENGTH} characters.`,
+          ),
+        );
+      } else {
+        const key = values.category.toLowerCase();
+        categoryName = newCategoryNames.get(key) ?? values.category;
+        newCategoryNames.set(key, categoryName);
+      }
     }
+    categoryNameByRow.set(rowNumber, categoryName);
     if (
       values.price &&
       (!amountPattern.test(values.price) || Number(values.price) > PRICE_MAX)
@@ -186,12 +267,12 @@ export async function analyzeProductRows(
         ),
       );
 
-    const categoryId = byCategory.get(values.category) ?? null;
-    if (issues.length === 0 && categoryId) {
+    const categoryId = existingCategory?.id ?? null;
+    if (issues.length === 0) {
       const dto = plainToInstance(CreateProductDto, {
         name: values.name,
         sku: values.sku,
-        categoryId,
+        categoryId: categoryId ?? NEW_CATEGORY_PLACEHOLDER_ID,
         price: Number(values.price),
         costPrice: values.costPrice ? Number(values.costPrice) : null,
         stock: values.stock ? Number(values.stock) : 0,
@@ -270,10 +351,11 @@ export async function analyzeProductRows(
     .filter((row) => row.issues.length === 0)
     .map((row) => ({
       rowNumber: row.rowNumber,
+      categoryName: categoryNameByRow.get(row.rowNumber)!,
       dto: {
         name: row.values.name,
         sku: row.values.sku,
-        categoryId: row.categoryId!,
+        categoryId: row.categoryId,
         price: Number(row.values.price),
         costPrice: row.values.costPrice ? Number(row.values.costPrice) : null,
         stock: row.values.stock ? Number(row.values.stock) : 0,

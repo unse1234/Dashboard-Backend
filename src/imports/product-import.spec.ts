@@ -2,7 +2,7 @@ import type { Prisma } from '../generated/prisma/client';
 import type { Db } from '../prisma/prisma.service';
 import type { ParsedProductCsv } from './csv.parser';
 import type { ProductImportColumn } from './import.constants';
-import { analyzeProductRows } from './product-import';
+import { analyzeProductRows, withCategoryIds } from './product-import';
 
 const CATEGORY_ID = '7a1d0b52-44b1-4c04-9d38-5d7a2f3c9b11';
 
@@ -63,6 +63,7 @@ describe('analyzeProductRows', () => {
       expect(result.validRows).toEqual([
         {
           rowNumber: 2,
+          categoryName: 'Home',
           dto: {
             name: 'Blue Mug',
             sku: 'MUG-1',
@@ -149,6 +150,98 @@ describe('analyzeProductRows', () => {
       );
 
       expect(result.validRows[0].dto.brand).toBe('null');
+    });
+  });
+
+  describe('categories', () => {
+    it('matches an existing category exactly or ignoring case', async () => {
+      const result = await analyzeProductRows(
+        parsed(
+          valid({ category: 'Home' }),
+          valid({ sku: 'B', category: 'home' }),
+        ),
+        fakeDb(),
+      );
+
+      expect(result.issues).toEqual([]);
+      expect(result.validRows.map((row) => row.dto.categoryId)).toEqual([
+        CATEGORY_ID,
+        CATEGORY_ID,
+      ]);
+      expect(result.validRows.map((row) => row.categoryName)).toEqual([
+        'Home',
+        'Home',
+      ]);
+    });
+
+    it('accepts a category that does not exist yet and leaves its id open', async () => {
+      const result = await analyzeProductRows(
+        parsed(valid({ category: 'Garden' })),
+        fakeDb(),
+      );
+
+      expect(result.issues).toEqual([]);
+      expect(result.payload.rows[0].categoryId).toBeNull();
+      expect(result.validRows).toMatchObject([
+        { categoryName: 'Garden', dto: { categoryId: null } },
+      ]);
+    });
+
+    it('treats new names that differ only by case as one category', async () => {
+      const result = await analyzeProductRows(
+        parsed(
+          valid({ sku: 'A', category: 'Toys' }),
+          valid({ sku: 'B', category: 'toys' }),
+          valid({ sku: 'C', category: 'TOYS' }),
+        ),
+        fakeDb(),
+      );
+
+      expect(result.validRows.map((row) => row.categoryName)).toEqual([
+        'Toys',
+        'Toys',
+        'Toys',
+      ]);
+    });
+  });
+
+  describe('withCategoryIds', () => {
+    it('creates only the missing categories and fills in every id', async () => {
+      const createMany = jest.fn().mockResolvedValue({ count: 1 });
+      const findMany = jest
+        .fn()
+        .mockResolvedValue([{ id: 'new-garden-id', name: 'Garden' }]);
+      const db = { category: { createMany, findMany } } as unknown as Db;
+      const result = await analyzeProductRows(
+        parsed(
+          valid({ sku: 'A', category: 'Home' }),
+          valid({ sku: 'B', category: 'Garden' }),
+          valid({ sku: 'C', category: 'garden' }),
+        ),
+        fakeDb(),
+      );
+
+      const dtos = await withCategoryIds(db, result.validRows);
+
+      expect(createMany).toHaveBeenCalledWith({
+        data: [{ name: 'Garden' }],
+        skipDuplicates: true,
+      });
+      expect(dtos.map((dto) => dto.categoryId)).toEqual([
+        CATEGORY_ID,
+        'new-garden-id',
+        'new-garden-id',
+      ]);
+    });
+
+    it('does not touch the categories when none is new', async () => {
+      const createMany = jest.fn();
+      const db = { category: { createMany } } as unknown as Db;
+      const result = await analyzeProductRows(parsed(valid()), fakeDb());
+
+      await withCategoryIds(db, result.validRows);
+
+      expect(createMany).not.toHaveBeenCalled();
     });
   });
 
@@ -245,19 +338,13 @@ describe('analyzeProductRows', () => {
       ]);
     });
 
-    it('matches category names exactly, with no case folding or creation', async () => {
+    it('rejects a new category name that is too long', async () => {
       const result = await analyzeProductRows(
-        parsed(
-          valid({ category: 'home' }),
-          valid({ sku: 'B', category: 'Garden' }),
-        ),
+        parsed(valid({ category: 'C'.repeat(81) })),
         fakeDb(),
       );
 
-      expect(codes(result)).toEqual([
-        [2, 'category', 'UNKNOWN_CATEGORY'],
-        [3, 'category', 'UNKNOWN_CATEGORY'],
-      ]);
+      expect(codes(result)).toEqual([[2, 'category', 'TOO_LONG']]);
     });
 
     it('never echoes the submitted value in a message', async () => {

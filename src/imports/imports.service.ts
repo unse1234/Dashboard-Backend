@@ -35,7 +35,7 @@ import {
   PRODUCT_IMPORT_COLUMNS,
   REQUIRED_PRODUCT_COLUMNS,
 } from './import.constants';
-import { analyzeProductRows } from './product-import';
+import { analyzeProductRows, withCategoryIds } from './product-import';
 import type { ImportPreviewPayload, RowIssue } from './import.types';
 import type { PreviewImportDto } from './dto/preview-import.dto';
 import type { ConfirmImportDto } from './dto/confirm-import.dto';
@@ -534,7 +534,7 @@ export class ImportsService {
           const numbers = await createProductsInTransaction(
             tx,
             actor,
-            analyzed.validRows.map((row) => row.dto),
+            await withCategoryIds(tx, analyzed.validRows),
           );
           const complete = await tx.importJob.updateMany({
             where: { id: job.id, status: 'PROCESSING', attemptToken: token },

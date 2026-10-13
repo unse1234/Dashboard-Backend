@@ -34,10 +34,13 @@ export interface ImportPreviewPayload {
 
 export interface ValidProductRow {
   rowNumber: number;
+  /** The existing category's name, or the spelling to create when it is new. */
+  categoryName: string;
   dto: {
     name: string;
     sku: string;
-    categoryId: string;
+    /** Null while the category does not exist yet; see `withCategoryIds`. */
+    categoryId: string | null;
     price: number;
     costPrice: number | null;
     stock: number;
