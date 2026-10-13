@@ -68,8 +68,8 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | GET | `/products` | ADMIN, STAFF | `?page=1&pageSize=20&search&categoryId&status` (`pageSize` ≤ 100; `search` matches name or SKU, case-insensitive, or a product id such as `PRD-1001` or `1001`; `categoryId` is a category uuid; `status` is `ACTIVE`, `INACTIVE` or `OUT_OF_STOCK`; newest first) → `{ data, meta: { page, pageSize, total, totalPages } }`. Archived products are never listed |
 | GET | `/products/:productId` | ADMIN, STAFF | One product; `404` if unknown or archived, `400` if `:productId` is not like `PRD-1001` |
 | GET | `/products/:productId/history` | ADMIN, STAFF | `{ data: [{ id, change, occurredAt, actor }] }`, newest first, at most 50; `actor` is `null` for automatic changes |
-| POST | `/products` | ADMIN, STAFF | `{ name, sku, categoryId, price, brand?, description?, status?, costPrice?, stock? }` → `201`; `409` if the SKU is taken (any case, archived products included), `400` for an unknown category |
-| PATCH | `/products/:productId` | ADMIN, STAFF | `{ version, ...fields }`; `version` is the one the editor loaded. Only fields that differ are written. `409` when the product changed since that version, or the SKU is taken. `brand`, `description` and `costPrice` can be cleared with `null` |
+| POST | `/products` | ADMIN, STAFF | `{ name, sku, categoryId, price, currency?, subtitle?, brand?, description?, imageUrl?, galleryUrls?, status?, costPrice?, stock? }` → `201`; `409` if the SKU is taken (any case, archived products included), `400` for an unknown category |
+| PATCH | `/products/:productId` | ADMIN, STAFF | `{ version, ...fields }`; `version` is the one the editor loaded. Only fields that differ are written. `409` when the product changed since that version, or the SKU is taken. `subtitle`, `brand`, `description`, `imageUrl` and `costPrice` can be cleared with `null`, `galleryUrls` with `[]` |
 | POST | `/products/archive` | ADMIN | `{ productIds: ["PRD-1001", ...] }` (1–100) → `200 { archived }`, the number archived by this call; unknown or already archived ids are skipped, so repeating it is harmless |
 | GET | `/orders` | ADMIN, STAFF | `?page=1&pageSize=20&search&status&paymentStatus&customerId&sortBy&sortOrder` (`pageSize` ≤ 100; `search` matches the customer's name or email, case-insensitive, or an order id such as `ORD-10001` or `10001`; `status` is `PENDING`, `PROCESSING`, `SHIPPED`, `DELIVERED` or `CANCELLED`; `paymentStatus` is `PENDING`, `PAID` or `REFUNDED`; `customerId` is like `CUS-1001`; `sortBy` is `id`, `customer`, `createdAt`, `itemCount`, `total`, `paymentStatus` or `status`, `sortOrder` is `asc` (default) or `desc`; newest first without `sortBy`) → `{ data, meta: { page, pageSize, total, totalPages } }` |
 | GET | `/orders/:orderId` | ADMIN, STAFF | The order with its lines, amounts and address snapshots; `404` if unknown, `400` if `:orderId` is not like `ORD-10001` |
@@ -140,7 +140,8 @@ There is no storefront yet, so data comes from the dev seed (see Commands).
 
 A product is one sellable unit: one SKU, one price and one stock count (there are no variants).
 Responses use the public id `PRD-<number>`; internal uuids are never returned. Prices are
-numbers in USD with at most two decimals, stored as `NUMERIC(12,2)`. Categories are seeded by a
+numbers in the product's `currency` (`USD` or `PKR`) with at most two decimals, stored as
+`NUMERIC(12,2)`. Categories are seeded by a
 migration; there is no category management yet.
 
 - **Status.** A product is `ACTIVE` or `INACTIVE`. "Out of stock" is not stored: it is an
@@ -155,9 +156,19 @@ migration; there is no category management yet.
   acknowledged without a new version.
 - **History.** Each change is recorded in the same transaction as the change, with who made it
   (`null`, shown as "System", for automatic changes), and phrased for the History tab.
+- **Currency.** Every product has a `currency` (`USD` by default; existing products are USD).
+  Changing it relabels the price, it never converts it, so send the new prices with it. A
+  currency change is recorded in the history as a price change.
+- **Storefront fields.** `subtitle` (up to 160 characters), `imageUrl` and `galleryUrls` (up to
+  10, in display order, no repeats). An image is an `http(s)` URL or a path starting with `/`;
+  `javascript:`, `data:` and `//host` references are refused.
 - **Database guarantees.** Stock is never negative, prices are never negative, and SKUs are
   unique ignoring case.
 
+> **Deploying:** migration `20261013100000_product_storefront_metadata` adds a `Currency` enum
+> and four columns to `Product` (currency defaulting to `USD`, subtitle, image, gallery); it
+> cannot fail on existing data. Deploy it after `20261012120000_import_jobs`.
+>
 > **Deploying:** migration `20261012100000_products_and_inventory` adds tables, one nullable
 > column and foreign key on `OrderItem` (existing lines keep `NULL`), and inserts the six
 > default categories. Deploy it after `20261009130000_customers_and_orders`.
@@ -167,7 +178,15 @@ migration; there is no category management yet.
 Orders keep **snapshots** of the customer, both addresses and every line (product id, name,
 SKU and unit price) as they were when the order was placed, so an order reads the same
 whatever later happens to the customer or the products. Only its status and payment status
-ever change afterwards. Amounts are `NUMERIC(12,2)` USD, computed with exact decimals.
+ever change afterwards. Amounts are `NUMERIC(12,2)` in the order's `currency`, computed with
+exact decimals. The currency is the one its products are priced in (taken in the same statement
+that takes the stock); an order that mixes currencies is refused with `400` and takes nothing.
+Nothing is converted between currencies. Orders that predate currencies are `USD`.
+
+**Payment method.** `paymentMethod` is `null` (legacy or unspecified) or `COD`. An order without
+a method must be paid before it ships. A `COD` order may be `SHIPPED` while its payment is still
+`PENDING`, since the cash is collected on delivery; `DELIVERED` always requires `PAID`. The
+database enforces this as well as the API.
 
 **Lifecycle.** Forward only; shipping may skip `PROCESSING`; `DELIVERED` and `CANCELLED` are final.
 
@@ -219,6 +238,12 @@ client calling it cross-origin would need `Idempotency-Key` added to the CORS al
 > ```
 >
 > Deploy it after `20261012100000_products_and_inventory`.
+
+> **Deploying:** migration `20261013110000_order_currency_and_cod` adds `currency` (default
+> `USD`) and a nullable `paymentMethod` to `Order`, and replaces the CHECK above with one that
+> additionally allows a shipped `COD` order with a pending payment. Every row the old rule
+> accepted satisfies the new one, so it cannot fail on existing data. Deploy it after
+> `20261013100000_product_storefront_metadata`.
 
 ## Product CSV imports
 
