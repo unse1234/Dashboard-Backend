@@ -94,7 +94,7 @@ export async function createTestApp(
 export async function resetDatabase(prisma: PrismaService): Promise<void> {
   await prisma.$executeRawUnsafe(
     // "Category" is reference data the migration seeds, so it is left alone.
-    'TRUNCATE TABLE "Session", "PasswordResetToken", "EmailVerificationToken", "User", "ProductEvent", "OrderEvent", "OrderItem", "Order", "Product", "CustomerAddress", "Customer" CASCADE',
+    'TRUNCATE TABLE "Session", "PasswordResetToken", "EmailVerificationToken", "ImportJob", "User", "ProductEvent", "OrderEvent", "OrderItem", "Order", "Product", "CustomerAddress", "Customer" CASCADE',
   );
 }
 

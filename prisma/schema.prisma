@@ -44,6 +44,64 @@ model User {
   emailVerificationTokens EmailVerificationToken[]
   productEvents           ProductEvent[]
   orderEvents             OrderEvent[]
+  importJobs              ImportJob[]
+}
+
+enum ImportType {
+  PRODUCTS
+}
+
+enum ImportJobStatus {
+  READY
+  VALIDATION_FAILED
+  PROCESSING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+model ImportJob {
+  id                    String          @id @default(uuid())
+  number                Int             @unique @default(autoincrement())
+  type                  ImportType      @default(PRODUCTS)
+  status                ImportJobStatus
+  initiatedById         String
+  initiatedBy           User            @relation(fields: [initiatedById], references: [id], onDelete: Restrict)
+  originalFilename      String
+  fileSizeBytes         Int
+  fileSha256            String
+  clientRequestId       String
+  requestHash           String
+  schemaVersion         Int             @default(1)
+  previewHash           String
+  totalRows             Int
+  validRows             Int
+  invalidRows           Int
+  importedRows          Int             @default(0)
+  createdProductNumbers Json?
+  previewPayload        Json?
+  errors                Json?
+  failureCode           String?
+  failureMessage        String?
+  retryable             Boolean         @default(false)
+  attemptToken          String?
+  attemptExpiresAt      DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  startedAt             DateTime?
+  completedAt           DateTime?
+  previewExpiresAt      DateTime
+  errorsExpiresAt       DateTime
+  retainUntil           DateTime
+
+  @@unique([initiatedById, clientRequestId])
+  @@index([initiatedById, createdAt(sort: Desc), number(sort: Desc)])
+  @@index([status, createdAt(sort: Desc), number(sort: Desc)])
+  @@index([createdAt(sort: Desc), number(sort: Desc)])
+  @@index([previewExpiresAt])
+  @@index([errorsExpiresAt])
+  @@index([retainUntil])
+  @@index([status, attemptExpiresAt])
 }
 
 // One row per signed-in browser. The refresh credential is "<id>.<secret>"; only
