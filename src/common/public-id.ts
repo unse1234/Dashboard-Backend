@@ -3,7 +3,7 @@
  * Internal uuids are never exposed. The number is a Postgres INTEGER column
  * (an autoincrement sequence), so ids are range-checked.
  */
-export type PublicIdPrefix = 'CUS' | 'ORD' | 'PRD';
+export type PublicIdPrefix = 'CUS' | 'ORD' | 'PRD' | 'IMP';
 
 const MAX_NUMBER = 2_147_483_647;
 
@@ -12,6 +12,7 @@ const ID_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   CUS: /^CUS-([1-9]\d{0,9})$/i,
   ORD: /^ORD-([1-9]\d{0,9})$/i,
   PRD: /^PRD-([1-9]\d{0,9})$/i,
+  IMP: /^IMP-([1-9]\d{0,9})$/i,
 };
 
 // What a search box accepts: the prefixed id, the prefix without its dash, or the bare number.
@@ -19,6 +20,7 @@ const SEARCH_PATTERNS: Record<PublicIdPrefix, RegExp> = {
   CUS: /^(?:CUS-?)?([1-9]\d{0,9})$/i,
   ORD: /^(?:ORD-?)?([1-9]\d{0,9})$/i,
   PRD: /^(?:PRD-?)?([1-9]\d{0,9})$/i,
+  IMP: /^(?:IMP-?)?([1-9]\d{0,9})$/i,
 };
 
 const inRange = (digits: string) => {

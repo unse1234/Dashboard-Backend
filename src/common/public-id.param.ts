@@ -10,6 +10,7 @@ const NOUNS: Record<PublicIdPrefix, string> = {
   CUS: 'a customer',
   ORD: 'an order',
   PRD: 'a product',
+  IMP: 'an import',
 };
 
 /** The number in a route param like "PRD-1001"; 400 when it is malformed. */

@@ -7,7 +7,7 @@ import {
 } from './public-id';
 import { parsePublicIdParam } from './public-id.param';
 
-const PREFIXES: PublicIdPrefix[] = ['CUS', 'ORD', 'PRD'];
+const PREFIXES: PublicIdPrefix[] = ['CUS', 'ORD', 'PRD', 'IMP'];
 
 describe.each(PREFIXES)('public ids with the prefix %s', (prefix) => {
   it('formats the number', () => {
