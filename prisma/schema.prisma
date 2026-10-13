@@ -178,6 +178,13 @@ enum PaymentStatus {
   REFUNDED
 }
 
+// How an order is paid for. Null on an order means legacy or unspecified: such
+// orders keep the original rules (paid before they ship). COD orders may ship
+// unpaid, since the cash is collected on delivery.
+enum PaymentMethod {
+  COD
+}
+
 model Customer {
   // Internal key; never exposed. The public id is "CUS-<number>".
   id        String   @id @default(uuid())
@@ -237,6 +244,10 @@ model Order {
   customerPhone   String?
   status          OrderStatus   @default(PENDING)
   paymentStatus   PaymentStatus @default(PENDING)
+  paymentMethod   PaymentMethod?
+  // What every amount below is denominated in, fixed when the order is placed.
+  // Rows that predate this column are USD.
+  currency        Currency      @default(USD)
   subtotal        Decimal       @db.Decimal(12, 2)
   shipping        Decimal       @db.Decimal(12, 2)
   discount        Decimal       @db.Decimal(12, 2)

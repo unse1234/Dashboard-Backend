@@ -13,6 +13,7 @@ import type {
   AddressType,
   Currency,
   OrderStatus,
+  PaymentMethod,
   PaymentStatus,
   ProductStatus,
   Role,
@@ -258,6 +259,10 @@ export interface OrderOptions {
   status?: OrderStatus;
   /** Defaults to one that goes with `status`: paid, unpaid, or refunded when cancelled. */
   paymentStatus?: PaymentStatus;
+  /** Null (the default) is a legacy order, without a payment method. */
+  paymentMethod?: PaymentMethod | null;
+  /** Defaults to USD, as the column does. */
+  currency?: Currency;
   createdAt?: Date;
   /**
    * Lines of real products, snapshotted at their current price. Replaces the
@@ -345,6 +350,10 @@ export function createOrder(
       customerPhone: customer.phone,
       status,
       paymentStatus,
+      ...(options.paymentMethod !== undefined
+        ? { paymentMethod: options.paymentMethod }
+        : {}),
+      ...(options.currency ? { currency: options.currency } : {}),
       itemCount: itemLines.reduce((units, line) => units + line.quantity, 0),
       subtotal: fromCents(subtotal),
       shipping: fromCents(shipping),

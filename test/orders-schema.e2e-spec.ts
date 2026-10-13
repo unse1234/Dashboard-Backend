@@ -77,6 +77,106 @@ describe('Order lifecycle schema (e2e)', () => {
     });
   });
 
+  describe('cash on delivery', () => {
+    it('lets a COD order ship while its payment is still pending', async () => {
+      const customer = await createCustomer(ctx.prisma);
+      const order = await createOrder(ctx.prisma, customer, {
+        status: 'SHIPPED',
+        paymentStatus: 'PENDING',
+        paymentMethod: 'COD',
+      });
+      expect(order.paymentMethod).toBe('COD');
+    });
+
+    it('still refuses to ship an order with no payment method unpaid', async () => {
+      // A NULL method must not turn the COD branch into NULL, which a CHECK lets through.
+      const customer = await createCustomer(ctx.prisma);
+      await expect(
+        createOrder(ctx.prisma, customer, {
+          status: 'SHIPPED',
+          paymentStatus: 'PENDING',
+          paymentMethod: null,
+        }),
+      ).rejects.toThrow(/Order_payment_consistency_check/);
+    });
+
+    it('still requires a COD order to be paid before it is delivered', async () => {
+      const customer = await createCustomer(ctx.prisma);
+      await expect(
+        createOrder(ctx.prisma, customer, {
+          status: 'DELIVERED',
+          paymentStatus: 'PENDING',
+          paymentMethod: 'COD',
+        }),
+      ).rejects.toThrow(/Order_payment_consistency_check/);
+    });
+
+    it('refuses a shipped COD order that is refunded or never paid for', async () => {
+      const customer = await createCustomer(ctx.prisma);
+      await expect(
+        createOrder(ctx.prisma, customer, {
+          status: 'SHIPPED',
+          paymentStatus: 'REFUNDED',
+          paymentMethod: 'COD',
+        }),
+      ).rejects.toThrow(/Order_payment_consistency_check/);
+    });
+
+    it('accepts the payment being collected after it shipped', async () => {
+      const customer = await createCustomer(ctx.prisma);
+      const order = await createOrder(ctx.prisma, customer, {
+        status: 'SHIPPED',
+        paymentStatus: 'PENDING',
+        paymentMethod: 'COD',
+      });
+      const paid = await ctx.prisma.order.update({
+        where: { id: order.id },
+        data: { paymentStatus: 'PAID' },
+      });
+      expect(paid.paymentStatus).toBe('PAID');
+    });
+
+    it('leaves the payment method empty unless one is given', async () => {
+      const customer = await createCustomer(ctx.prisma);
+      const order = await createOrder(ctx.prisma, customer);
+      expect(order.paymentMethod).toBeNull();
+    });
+
+    it('accepts only a known payment method', async () => {
+      const customer = await createCustomer(ctx.prisma);
+      const order = await createOrder(ctx.prisma, customer);
+      await expect(
+        ctx.prisma
+          .$executeRaw`UPDATE "Order" SET "paymentMethod" = 'CARD' WHERE "id" = ${order.id}`,
+      ).rejects.toThrow();
+    });
+  });
+
+  describe('currency', () => {
+    it('is USD unless the order says otherwise', async () => {
+      const customer = await createCustomer(ctx.prisma);
+      const order = await createOrder(ctx.prisma, customer);
+      expect(order.currency).toBe('USD');
+    });
+
+    it('can be PKR', async () => {
+      const customer = await createCustomer(ctx.prisma);
+      const order = await createOrder(ctx.prisma, customer, {
+        currency: 'PKR',
+      });
+      expect(order.currency).toBe('PKR');
+    });
+
+    it('cannot be an unknown currency', async () => {
+      const customer = await createCustomer(ctx.prisma);
+      const order = await createOrder(ctx.prisma, customer);
+      await expect(
+        ctx.prisma
+          .$executeRaw`UPDATE "Order" SET "currency" = 'EUR' WHERE "id" = ${order.id}`,
+      ).rejects.toThrow();
+    });
+  });
+
   describe('idempotency keys', () => {
     it('are unique, and an order may have none', async () => {
       const customer = await createCustomer(ctx.prisma);
