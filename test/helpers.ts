@@ -11,6 +11,7 @@ import {
 } from '../src/mail/mail-transport';
 import type {
   AddressType,
+  Currency,
   OrderStatus,
   PaymentStatus,
   ProductStatus,
@@ -367,9 +368,14 @@ export interface ProductOptions {
   category?: string;
   status?: ProductStatus;
   price?: number | string;
+  /** Defaults to USD, as the column does. */
+  currency?: Currency;
   costPrice?: number | string | null;
   stock?: number;
   archived?: boolean;
+  subtitle?: string | null;
+  imageUrl?: string | null;
+  galleryUrls?: string[];
   createdAt?: Date;
 }
 
@@ -395,9 +401,13 @@ export async function createProduct(
       categoryId: category.id,
       status: options.status ?? 'ACTIVE',
       price: options.price ?? '10.00',
+      ...(options.currency ? { currency: options.currency } : {}),
       costPrice: options.costPrice ?? null,
       stock: options.stock ?? 10,
       archivedAt: options.archived ? new Date() : null,
+      subtitle: options.subtitle ?? null,
+      imageUrl: options.imageUrl ?? null,
+      ...(options.galleryUrls ? { galleryUrls: options.galleryUrls } : {}),
       ...(options.createdAt ? { createdAt: options.createdAt } : {}),
     },
   });

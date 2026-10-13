@@ -326,6 +326,13 @@ enum ProductStatus {
   INACTIVE
 }
 
+// What an amount is denominated in. Amounts are never converted between
+// currencies: a product and an order each carry the currency they were priced in.
+enum Currency {
+  USD
+  PKR
+}
+
 enum ProductEventType {
   CREATED
   DETAILS_UPDATED
@@ -353,13 +360,21 @@ model Product {
   number      Int           @unique @default(autoincrement())
   name        String
   sku         String
+  // Shown under the name on the storefront.
+  subtitle    String?
   description String?
   brand       String?
+  // Storefront imagery: the primary image, and further images in display order.
+  // URLs only; there is no upload service.
+  imageUrl    String?
+  galleryUrls String[]      @default([])
   categoryId  String
   // Restrict: a category that still has products cannot be removed.
   category    Category      @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   status      ProductStatus @default(ACTIVE)
   price       Decimal       @db.Decimal(12, 2)
+  // What `price` is denominated in. Rows that predate this column are USD.
+  currency    Currency      @default(USD)
   costPrice   Decimal?      @db.Decimal(12, 2)
   stock       Int           @default(0)
   // Optimistic concurrency: every write increments it, order-driven stock changes

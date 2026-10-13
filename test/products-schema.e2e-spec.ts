@@ -73,6 +73,48 @@ describe('Products schema (e2e)', () => {
     });
   });
 
+  describe('currency and storefront metadata', () => {
+    it('prices a product in USD, with no subtitle or images, unless told otherwise', async () => {
+      const product = await createProduct(ctx.prisma);
+      expect(product).toMatchObject({
+        currency: 'USD',
+        subtitle: null,
+        imageUrl: null,
+        galleryUrls: [],
+      });
+    });
+
+    it('keeps the currency, subtitle and ordered gallery it is given', async () => {
+      const gallery = [
+        'https://cdn.example.com/b.jpg',
+        'https://cdn.example.com/a.jpg',
+      ];
+      const product = await createProduct(ctx.prisma, {
+        currency: 'PKR',
+        subtitle: 'Wireless, noise cancelling',
+        imageUrl: 'https://cdn.example.com/main.jpg',
+        galleryUrls: gallery,
+      });
+      const stored = await ctx.prisma.product.findUniqueOrThrow({
+        where: { id: product.id },
+      });
+      expect(stored).toMatchObject({
+        currency: 'PKR',
+        subtitle: 'Wireless, noise cancelling',
+        imageUrl: 'https://cdn.example.com/main.jpg',
+        galleryUrls: gallery,
+      });
+    });
+
+    it('refuses a currency the system does not know', async () => {
+      const product = await createProduct(ctx.prisma);
+      await expect(
+        ctx.prisma
+          .$executeRaw`UPDATE "Product" SET "currency" = 'EUR' WHERE "id" = ${product.id}`,
+      ).rejects.toThrow();
+    });
+  });
+
   describe('stock', () => {
     it('is never negative, on insert or update', async () => {
       await expect(
