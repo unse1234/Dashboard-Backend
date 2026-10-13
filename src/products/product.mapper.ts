@@ -1,6 +1,10 @@
 import { formatPublicId } from '../common/public-id';
 import { toAmount } from '../common/money';
-import type { Prisma, ProductStatus } from '../generated/prisma/client';
+import type {
+  Currency,
+  Prisma,
+  ProductStatus,
+} from '../generated/prisma/client';
 import { describeEvent } from './product-events';
 
 /** A product as the list, the details and the form show it. */
@@ -9,15 +13,22 @@ export interface ProductDto {
   id: string;
   name: string;
   sku: string;
+  subtitle: string | null;
   description: string | null;
   categoryId: string;
   /** The category's name. */
   category: string;
   brand: string | null;
+  /** The primary image: an http(s) URL or a path on the storefront. */
+  imageUrl: string | null;
+  /** Further images, in display order. */
+  galleryUrls: string[];
   status: ProductStatus;
-  /** Selling price in USD. */
+  /** Selling price, in `currency`. */
   price: number;
-  /** What the product costs the business in USD; null when unknown. */
+  /** What `price` and `costPrice` are denominated in. */
+  currency: Currency;
+  /** What the product costs the business, in `currency`; null when unknown. */
   costPrice: number | null;
   stock: number;
   /**
@@ -48,12 +59,16 @@ export const productSelect = {
   number: true,
   name: true,
   sku: true,
+  subtitle: true,
   description: true,
   brand: true,
+  imageUrl: true,
+  galleryUrls: true,
   categoryId: true,
   category: { select: { name: true } },
   status: true,
   price: true,
+  currency: true,
   costPrice: true,
   stock: true,
   version: true,
@@ -70,12 +85,16 @@ export function toProductDto(row: ProductRow): ProductDto {
     id: formatPublicId('PRD', row.number),
     name: row.name,
     sku: row.sku,
+    subtitle: row.subtitle,
     description: row.description,
     categoryId: row.categoryId,
     category: row.category.name,
     brand: row.brand,
+    imageUrl: row.imageUrl,
+    galleryUrls: row.galleryUrls,
     status: row.status,
     price: toAmount(row.price),
+    currency: row.currency,
     costPrice: row.costPrice === null ? null : toAmount(row.costPrice),
     stock: row.stock,
     version: row.version,

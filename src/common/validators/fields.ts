@@ -19,7 +19,7 @@ export const Omittable = () =>
   ValidateIf((_object, value: unknown) => value !== undefined);
 
 /** Whitespace-only text counts as empty, and empty means "none". */
-const emptyToNull = ({ value }: { value: unknown }): unknown => {
+export const emptyToNull = ({ value }: { value: unknown }): unknown => {
   if (typeof value !== 'string') return value;
   const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;

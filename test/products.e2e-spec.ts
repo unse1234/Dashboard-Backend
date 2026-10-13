@@ -20,13 +20,17 @@ const PRODUCT_FIELDS = [
   'categoryId',
   'costPrice',
   'createdAt',
+  'currency',
   'description',
+  'galleryUrls',
   'id',
+  'imageUrl',
   'name',
   'price',
   'sku',
   'status',
   'stock',
+  'subtitle',
   'updatedAt',
   'version',
 ];
@@ -243,6 +247,10 @@ describe('Products (e2e)', () => {
         brand: 'Hearthstone',
         status: 'ACTIVE',
         price: 12.5,
+        currency: 'USD',
+        subtitle: null,
+        imageUrl: null,
+        galleryUrls: [],
         costPrice: 4.25,
         stock: 7,
         version: 1,
@@ -515,6 +523,50 @@ describe('Products (e2e)', () => {
       });
     });
 
+    it('prices in USD, with no subtitle or images, unless told otherwise', async () => {
+      const res = await post('/products', await validBody()).expect(201);
+      expect(res.body).toMatchObject({
+        currency: 'USD',
+        subtitle: null,
+        imageUrl: null,
+        galleryUrls: [],
+      });
+    });
+
+    it('stores a currency, a subtitle and images, keeping the gallery order', async () => {
+      const res = await post(
+        '/products',
+        await validBody({
+          currency: 'PKR',
+          price: 2800,
+          subtitle: ' Wireless, noise cancelling ',
+          imageUrl: 'https://cdn.example.com/main.jpg',
+          galleryUrls: ['/products/b.png', '/products/a.png'],
+        }),
+      ).expect(201);
+      expect(res.body).toMatchObject({
+        currency: 'PKR',
+        price: 2800,
+        subtitle: 'Wireless, noise cancelling',
+        imageUrl: 'https://cdn.example.com/main.jpg',
+        galleryUrls: ['/products/b.png', '/products/a.png'],
+      });
+    });
+
+    it('refuses an image that is not an http(s) URL or a storefront path', async () => {
+      await post(
+        '/products',
+        await validBody({ imageUrl: 'javascript:alert(1)' }),
+      ).expect(400);
+      await post(
+        '/products',
+        await validBody({
+          galleryUrls: ['/ok.png', 'data:image/png;base64,AA'],
+        }),
+      ).expect(400);
+      expect(await ctx.prisma.product.count()).toBe(0);
+    });
+
     it('turns a blank brand into none', async () => {
       const res = await post(
         '/products',
@@ -652,6 +704,73 @@ describe('Products (e2e)', () => {
       expect(new Set(entries.map((e) => e.actor))).toEqual(
         new Set(['Sam Staff']),
       );
+    });
+
+    it('changes the currency, subtitle and images, and records them', async () => {
+      const product = await createProduct(ctx.prisma, { price: '10.00' });
+      const res = await patch(`/products/${prd(product)}`, {
+        version: 1,
+        currency: 'PKR',
+        price: 2800,
+        subtitle: 'Wireless',
+        imageUrl: '/products/a.png',
+        galleryUrls: ['/products/b.png'],
+      }).expect(200);
+      expect(res.body).toMatchObject({
+        currency: 'PKR',
+        price: 2800,
+        subtitle: 'Wireless',
+        imageUrl: '/products/a.png',
+        galleryUrls: ['/products/b.png'],
+        version: 2,
+      });
+
+      const entries = (await history(prd(product))).data;
+      expect(entries.map((e) => e.change).sort()).toEqual(
+        [
+          'Details updated: subtitle, images',
+          'Price changed from $10.00 to PKR 2,800.00',
+        ].sort(),
+      );
+    });
+
+    it('records a currency change at the same number as a price change', async () => {
+      const product = await createProduct(ctx.prisma, { price: '10.00' });
+      await patch(`/products/${prd(product)}`, {
+        version: 1,
+        currency: 'PKR',
+      }).expect(200);
+      const entries = (await history(prd(product))).data;
+      expect(entries.map((e) => e.change)).toEqual([
+        'Price changed from $10.00 to PKR 10.00',
+      ]);
+    });
+
+    it('clears the images with null and an empty list, and acknowledges no change', async () => {
+      const product = await createProduct(ctx.prisma, {
+        subtitle: 'Wireless',
+        imageUrl: '/products/a.png',
+        galleryUrls: ['/products/b.png'],
+      });
+      const cleared = await patch(`/products/${prd(product)}`, {
+        version: 1,
+        subtitle: null,
+        imageUrl: null,
+        galleryUrls: [],
+      }).expect(200);
+      expect(cleared.body).toMatchObject({
+        subtitle: null,
+        imageUrl: null,
+        galleryUrls: [],
+        version: 2,
+      });
+
+      const again = await patch(`/products/${prd(product)}`, {
+        version: 2,
+        imageUrl: null,
+        galleryUrls: [],
+      }).expect(200);
+      expect((again.body as ProductBody).version).toBe(2);
     });
 
     it('lists the history newest first', async () => {

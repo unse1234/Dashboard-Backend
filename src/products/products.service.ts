@@ -263,11 +263,15 @@ const hasAnyField = (dto: UpdateProductDto) =>
     [
       'name',
       'sku',
+      'subtitle',
       'brand',
       'description',
+      'imageUrl',
+      'galleryUrls',
       'categoryId',
       'status',
       'price',
+      'currency',
       'costPrice',
       'stock',
     ] as const
@@ -277,6 +281,9 @@ const sameAmount = (current: Prisma.Decimal | null, next: number | null) =>
   current === null || next === null
     ? current === null && next === null
     : current.equals(toDecimal(next));
+
+const sameList = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((value, index) => value === b[index]);
 
 /**
  * Only the fields that actually differ, so an untouched field is never written
@@ -293,6 +300,9 @@ function changedFields(
     changes.name = dto.name;
   }
   if (dto.sku !== undefined && dto.sku !== current.sku) changes.sku = dto.sku;
+  if (dto.subtitle !== undefined && dto.subtitle !== current.subtitle) {
+    changes.subtitle = dto.subtitle;
+  }
   if (dto.brand !== undefined && dto.brand !== current.brand) {
     changes.brand = dto.brand;
   }
@@ -302,6 +312,15 @@ function changedFields(
   ) {
     changes.description = dto.description;
   }
+  if (dto.imageUrl !== undefined && dto.imageUrl !== current.imageUrl) {
+    changes.imageUrl = dto.imageUrl;
+  }
+  if (
+    dto.galleryUrls !== undefined &&
+    !sameList(dto.galleryUrls, current.galleryUrls)
+  ) {
+    changes.galleryUrls = dto.galleryUrls;
+  }
   if (dto.categoryId !== undefined && dto.categoryId !== current.categoryId) {
     changes.categoryId = dto.categoryId;
   }
@@ -310,6 +329,9 @@ function changedFields(
   }
   if (dto.price !== undefined && !sameAmount(current.price, dto.price)) {
     changes.price = toDecimal(dto.price);
+  }
+  if (dto.currency !== undefined && dto.currency !== current.currency) {
+    changes.currency = dto.currency;
   }
   if (
     dto.costPrice !== undefined &&

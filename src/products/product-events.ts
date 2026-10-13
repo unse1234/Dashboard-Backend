@@ -1,5 +1,6 @@
 import { formatPublicId } from '../common/public-id';
 import type {
+  Currency,
   Prisma,
   ProductEventType,
   ProductStatus,
@@ -7,7 +8,7 @@ import type {
 
 /** The details whose change is recorded as one "Details updated" entry. */
 export type ProductDetailField =
-  'name' | 'sku' | 'brand' | 'description' | 'category';
+  'name' | 'sku' | 'subtitle' | 'brand' | 'description' | 'images' | 'category';
 
 export type StockChangeReason = 'MANUAL' | 'ORDER_PLACED' | 'ORDER_CANCELLED';
 
@@ -25,6 +26,10 @@ export type ProductEventPayload =
         field: 'price' | 'costPrice';
         from: number | null;
         to: number | null;
+        /** What `to` is in. Entries written before currencies existed have none (USD). */
+        currency?: Currency;
+        /** What `from` was in, only when the currency itself changed. */
+        fromCurrency?: Currency;
       };
     }
   | { type: 'STATUS_CHANGED'; data: { from: ProductStatus; to: ProductStatus } }
@@ -44,14 +49,23 @@ export type ProductEventPayload =
 export interface ProductSnapshot {
   name: string;
   sku: string;
+  subtitle: string | null;
   brand: string | null;
   description: string | null;
+  imageUrl: string | null;
+  galleryUrls: string[];
   categoryId: string;
   status: ProductStatus;
   price: Prisma.Decimal;
+  currency: Currency;
   costPrice: Prisma.Decimal | null;
   stock: number;
 }
+
+const sameImages = (before: ProductSnapshot, after: ProductSnapshot) =>
+  before.imageUrl === after.imageUrl &&
+  before.galleryUrls.length === after.galleryUrls.length &&
+  before.galleryUrls.every((url, index) => url === after.galleryUrls[index]);
 
 const sameAmount = (a: Prisma.Decimal | null, b: Prisma.Decimal | null) =>
   a === null || b === null ? a === b : a.equals(b);
@@ -66,32 +80,46 @@ export function diffProduct(
   const fields: ProductDetailField[] = [];
   if (before.name !== after.name) fields.push('name');
   if (before.sku !== after.sku) fields.push('sku');
+  if (before.subtitle !== after.subtitle) fields.push('subtitle');
   if (before.brand !== after.brand) fields.push('brand');
   if (before.description !== after.description) fields.push('description');
+  if (!sameImages(before, after)) fields.push('images');
   if (before.categoryId !== after.categoryId) fields.push('category');
   if (fields.length > 0) {
     events.push({ type: 'DETAILS_UPDATED', data: { fields } });
   }
 
-  if (!sameAmount(before.price, after.price)) {
+  // Relabelling the currency is a price change even when the number is the
+  // same: 10.00 USD and 10.00 PKR are not the same price.
+  const currencyChanged = before.currency !== after.currency;
+  const currencyData = {
+    currency: after.currency,
+    ...(currencyChanged ? { fromCurrency: before.currency } : {}),
+  };
+  if (currencyChanged || !sameAmount(before.price, after.price)) {
     events.push({
       type: 'PRICE_CHANGED',
       data: {
         field: 'price',
         from: before.price.toNumber(),
         to: after.price.toNumber(),
+        ...currencyData,
       },
     });
   }
-  if (!sameAmount(before.costPrice, after.costPrice)) {
-    events.push({
-      type: 'PRICE_CHANGED',
-      data: {
-        field: 'costPrice',
-        from: before.costPrice?.toNumber() ?? null,
-        to: after.costPrice?.toNumber() ?? null,
-      },
-    });
+  if (currencyChanged || !sameAmount(before.costPrice, after.costPrice)) {
+    // Not worth an entry when the product has no cost price before or after.
+    if (before.costPrice !== null || after.costPrice !== null) {
+      events.push({
+        type: 'PRICE_CHANGED',
+        data: {
+          field: 'costPrice',
+          from: before.costPrice?.toNumber() ?? null,
+          to: after.costPrice?.toNumber() ?? null,
+          ...currencyData,
+        },
+      });
+    }
   }
 
   if (before.status !== after.status) {
@@ -121,13 +149,14 @@ export function toEventRows(
 }
 
 // --- Wording ---------------------------------------------------------------
-// Fixed locale and currency, like the dashboard's own formatting, so the text
-// does not depend on the server's settings.
+// Fixed locale, like the dashboard's own formatting, so the text does not depend
+// on the server's settings. The currency is the one the entry was written with;
+// entries from before currencies existed are USD.
 
-const currency = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-});
+const currencyFormats: Record<Currency, Intl.NumberFormat> = {
+  USD: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }),
+  PKR: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'PKR' }),
+};
 const integer = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
 
 const STATUS_LABELS: Record<ProductStatus, string> = {
@@ -138,13 +167,21 @@ const STATUS_LABELS: Record<ProductStatus, string> = {
 const FIELD_LABELS: Record<ProductDetailField, string> = {
   name: 'name',
   sku: 'SKU',
+  subtitle: 'subtitle',
   brand: 'brand',
   description: 'description',
+  images: 'images',
   category: 'category',
 };
 
-const amountText = (value: unknown) =>
-  typeof value === 'number' ? currency.format(value) : 'Not set';
+const currencyOf = (value: unknown): Currency =>
+  value === 'PKR' || value === 'USD' ? value : 'USD';
+// Intl puts a no-break space between a currency code and the number ("PKR 2,800.00").
+const NO_BREAK_SPACE = String.fromCharCode(0xa0);
+const amountText = (value: unknown, currency: Currency) =>
+  typeof value === 'number'
+    ? currencyFormats[currency].format(value).split(NO_BREAK_SPACE).join(' ')
+    : 'Not set';
 const countText = (value: unknown) =>
   typeof value === 'number' ? integer.format(value) : '?';
 /** "ORD-10002", or null when the event does not say which order. */
@@ -183,7 +220,10 @@ export function describeEvent(type: ProductEventType, raw: unknown): string {
     }
     case 'PRICE_CHANGED': {
       const label = data.field === 'costPrice' ? 'Cost price' : 'Price';
-      return `${label} changed from ${amountText(data.from)} to ${amountText(data.to)}`;
+      const to = currencyOf(data.currency);
+      const from =
+        data.fromCurrency === undefined ? to : currencyOf(data.fromCurrency);
+      return `${label} changed from ${amountText(data.from, from)} to ${amountText(data.to, to)}`;
     }
     case 'STATUS_CHANGED': {
       const label = (value: unknown) =>

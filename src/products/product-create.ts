@@ -13,11 +13,15 @@ export function productCreateData(
   return {
     name: dto.name,
     sku: dto.sku,
+    subtitle: dto.subtitle ?? null,
     brand: dto.brand ?? null,
     description: dto.description ?? null,
+    imageUrl: dto.imageUrl ?? null,
+    galleryUrls: dto.galleryUrls ?? [],
     categoryId: dto.categoryId,
     status: dto.status ?? 'ACTIVE',
     price: toDecimal(dto.price),
+    currency: dto.currency ?? 'USD',
     costPrice: dto.costPrice == null ? null : toDecimal(dto.costPrice),
     stock: dto.stock ?? 0,
   };

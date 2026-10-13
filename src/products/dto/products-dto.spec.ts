@@ -132,6 +132,69 @@ describe('CreateProductDto', () => {
     });
   });
 
+  it('accepts a currency, a subtitle and images, and trims them', async () => {
+    await expect(
+      create({
+        ...valid,
+        currency: 'PKR',
+        subtitle: '  Holds 350 ml  ',
+        imageUrl: '  https://cdn.example.com/mug.jpg ',
+        galleryUrls: [' /products/mug-2.png', 'https://cdn.example.com/3.jpg'],
+      }),
+    ).resolves.toMatchObject({
+      currency: 'PKR',
+      subtitle: 'Holds 350 ml',
+      imageUrl: 'https://cdn.example.com/mug.jpg',
+      galleryUrls: ['/products/mug-2.png', 'https://cdn.example.com/3.jpg'],
+    });
+  });
+
+  it('turns a blank subtitle or image into null, and accepts no gallery', async () => {
+    await expect(
+      create({ ...valid, subtitle: ' ', imageUrl: '', galleryUrls: [] }),
+    ).resolves.toMatchObject({
+      subtitle: null,
+      imageUrl: null,
+      galleryUrls: [],
+    });
+  });
+
+  it.each([
+    ['a currency that is not supported', { currency: 'EUR' }],
+    ['a lower-case currency', { currency: 'pkr' }],
+    ['a null currency', { currency: null }],
+    ['a subtitle over 160 characters', { subtitle: 's'.repeat(161) }],
+    ['a javascript: image', { imageUrl: 'javascript:alert(1)' }],
+    ['a data: image', { imageUrl: 'data:image/png;base64,AAAA' }],
+    ['a protocol-relative image', { imageUrl: '//cdn.example.com/a.png' }],
+    ['an image path that climbs out', { imageUrl: '/a/../../etc/passwd' }],
+    ['a relative image without a slash', { imageUrl: 'mug.png' }],
+    ['an image with a space', { imageUrl: 'https://cdn.example.com/a b.png' }],
+    ['an image URL with credentials', { imageUrl: 'https://u:p@h.example/a' }],
+    ['an image over 500 characters', { imageUrl: `/${'a'.repeat(500)}` }],
+    ['a gallery that is not a list', { galleryUrls: '/a.png' }],
+    ['a gallery with a bad entry', { galleryUrls: ['/a.png', 'ftp://h/a'] }],
+    ['a gallery with a repeated entry', { galleryUrls: ['/a.png', '/a.png'] }],
+    [
+      'a gallery of 11 images',
+      { galleryUrls: Array.from({ length: 11 }, (_, i) => `/p/${i}.png`) },
+    ],
+    ['a null gallery', { galleryUrls: null }],
+  ])('rejects %s', async (_label, overrides) => {
+    await expect(create({ ...valid, ...overrides })).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
+  it('accepts a gallery of 10 images', async () => {
+    await expect(
+      create({
+        ...valid,
+        galleryUrls: Array.from({ length: 10 }, (_, i) => `/p/${i}.png`),
+      }),
+    ).resolves.toBeDefined();
+  });
+
   it.each([
     ['a missing name', { name: undefined }],
     ['a one-character name', { name: 'A' }],
@@ -189,6 +252,45 @@ describe('UpdateProductDto', () => {
       status: 400,
     });
     await expect(update({ version: 3 })).resolves.toEqual({ version: 3 });
+  });
+
+  it('accepts the currency and storefront fields, and clearing them', async () => {
+    await expect(
+      update({
+        version: 2,
+        currency: 'PKR',
+        price: 2800,
+        subtitle: 'Wireless',
+        imageUrl: '/products/a.png',
+        galleryUrls: ['/products/b.png'],
+      }),
+    ).resolves.toEqual({
+      version: 2,
+      currency: 'PKR',
+      price: 2800,
+      subtitle: 'Wireless',
+      imageUrl: '/products/a.png',
+      galleryUrls: ['/products/b.png'],
+    });
+    await expect(
+      update({ version: 2, subtitle: null, imageUrl: null, galleryUrls: [] }),
+    ).resolves.toEqual({
+      version: 2,
+      subtitle: null,
+      imageUrl: null,
+      galleryUrls: [],
+    });
+  });
+
+  it.each([
+    ['an unsupported currency', { currency: 'EUR' }],
+    ['a null currency', { currency: null }],
+    ['an unsafe image', { imageUrl: 'javascript:alert(1)' }],
+    ['an unsafe gallery entry', { galleryUrls: ['data:text/html,x'] }],
+  ])('rejects %s', async (_label, overrides) => {
+    await expect(update({ version: 1, ...overrides })).rejects.toMatchObject({
+      status: 400,
+    });
   });
 
   it('accepts any subset of the fields', async () => {

@@ -9,11 +9,15 @@ import {
 const base: ProductSnapshot = {
   name: 'Ceramic Mug',
   sku: 'MUG-001',
+  subtitle: null,
   brand: 'Hearthstone',
   description: 'Holds 350 ml.',
+  imageUrl: null,
+  galleryUrls: [],
   categoryId: 'cat-1',
   status: 'ACTIVE',
   price: new Prisma.Decimal('12.50'),
+  currency: 'USD',
   costPrice: new Prisma.Decimal('4.25'),
   stock: 10,
 };
@@ -63,13 +67,73 @@ describe('diffProduct', () => {
     ).toEqual([
       {
         type: 'PRICE_CHANGED',
-        data: { field: 'price', from: 12.5, to: 14 },
+        data: { field: 'price', from: 12.5, to: 14, currency: 'USD' },
       },
       {
         type: 'PRICE_CHANGED',
-        data: { field: 'costPrice', from: 4.25, to: null },
+        data: { field: 'costPrice', from: 4.25, to: null, currency: 'USD' },
       },
     ]);
+  });
+
+  it('records a changed subtitle and changed images as details', () => {
+    expect(
+      diffProduct(base, {
+        ...base,
+        subtitle: 'Holds 350 ml',
+        imageUrl: '/products/mug.png',
+      }),
+    ).toEqual([
+      {
+        type: 'DETAILS_UPDATED',
+        data: { fields: ['subtitle', 'images'] },
+      },
+    ]);
+  });
+
+  it('sees a gallery that was reordered or extended', () => {
+    const before = { ...base, galleryUrls: ['/a.png', '/b.png'] };
+    expect(
+      diffProduct(before, { ...before, galleryUrls: ['/b.png', '/a.png'] }),
+    ).toHaveLength(1);
+    expect(
+      diffProduct(before, { ...before, galleryUrls: ['/a.png'] }),
+    ).toHaveLength(1);
+    expect(diffProduct(before, { ...before })).toEqual([]);
+  });
+
+  it('records a currency change as a price change, even at the same amount', () => {
+    expect(diffProduct(base, { ...base, currency: 'PKR' })).toEqual([
+      {
+        type: 'PRICE_CHANGED',
+        data: {
+          field: 'price',
+          from: 12.5,
+          to: 12.5,
+          currency: 'PKR',
+          fromCurrency: 'USD',
+        },
+      },
+      {
+        type: 'PRICE_CHANGED',
+        data: {
+          field: 'costPrice',
+          from: 4.25,
+          to: 4.25,
+          currency: 'PKR',
+          fromCurrency: 'USD',
+        },
+      },
+    ]);
+  });
+
+  it('does not record a cost price that neither side has when the currency changes', () => {
+    const events = diffProduct(
+      { ...base, costPrice: null },
+      { ...base, costPrice: null, currency: 'PKR' },
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].data).toMatchObject({ field: 'price' });
   });
 
   it('sees a cost price being set for the first time', () => {
@@ -81,7 +145,7 @@ describe('diffProduct', () => {
     ).toEqual([
       {
         type: 'PRICE_CHANGED',
-        data: { field: 'costPrice', from: null, to: 0 },
+        data: { field: 'costPrice', from: null, to: 0, currency: 'USD' },
       },
     ]);
   });
@@ -171,6 +235,27 @@ describe('describeEvent', () => {
       'DETAILS_UPDATED',
       { fields: ['name', 'sku', 'category'] },
       'Details updated: name, SKU, category',
+    ],
+    [
+      'DETAILS_UPDATED',
+      { fields: ['subtitle', 'images'] },
+      'Details updated: subtitle, images',
+    ],
+    [
+      'PRICE_CHANGED',
+      { field: 'price', from: 2800, to: 2600, currency: 'PKR' },
+      'Price changed from PKR 2,800.00 to PKR 2,600.00',
+    ],
+    [
+      'PRICE_CHANGED',
+      {
+        field: 'price',
+        from: 10,
+        to: 2800,
+        currency: 'PKR',
+        fromCurrency: 'USD',
+      },
+      'Price changed from $10.00 to PKR 2,800.00',
     ],
   ] as const)('phrases %s %j', (type, data, text) => {
     expect(describeEvent(type, data)).toBe(text);
