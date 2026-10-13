@@ -76,6 +76,9 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | POST | `/orders` | ADMIN | Places an order. Needs an `Idempotency-Key` header. `{ customerId, items: [{ productId, quantity }], shippingAddress, billingAddress?, shipping?, discount?, tax?, paymentStatus? }` → `201` with the order. Prices come from the products, never from the request. `409` when there is not enough stock (nothing is taken) or the key was used for a different order |
 | PATCH | `/orders/:orderId/status` | ADMIN, STAFF | `{ status }`. Moves along the lifecycle below; `409` with the reason otherwise. Asking for the status it already has is a no-op `200`. Cancelling returns the stock |
 | PATCH | `/orders/:orderId/payment-status` | ADMIN, STAFF | `{ paymentStatus: "PAID" }` records that the payment arrived; repeating it is harmless; `409` for a cancelled order |
+| GET | `/storefront/products` | public | `?page=1&pageSize=20&search&categoryId&sort` (`page` ≤ 10000, `pageSize` ≤ 100; `search` matches name, subtitle or brand, case-insensitive, `%` and `_` literal; `sort` is `newest` (default), `price_asc`, `price_desc` or `name`, each with a stable tie-break) → `{ data, meta: { page, pageSize, total, totalPages } }`. Any other parameter is `400` |
+| GET | `/storefront/products/:productId` | public | One visible product. Unknown, malformed, switched-off, archived and not-priced-in-PKR ids are the same `404` |
+| GET | `/storefront/catalog-readiness` | ADMIN, STAFF | `{ currency, eligible, excludedCount, excluded: [{ id, name, currency, price }] }`: the active products the storefront hides because they are not priced in PKR (first 100) |
 
 Unverified users can sign in and use the `/auth/*` account routes; everything else
 (`/users`, `/customers`, `/products`, `/categories`, `/orders`) requires a verified email. Passwords: 12–128 characters with a
@@ -95,6 +98,24 @@ lowercase letter, an uppercase letter and a number.
 - Email links point at the dashboard: `FRONTEND_URL/reset-password?token=…` (password reset
   and invitations) and `FRONTEND_URL/verify-email?token=…`. Those pages must exist in the
   frontend and post the token to the API. Set `Referrer-Policy: no-referrer` on them.
+
+### The public catalogue
+
+`/storefront/products` needs no sign-in and is read-only. It is a separate controller with its own
+DTOs and projection; the dashboard's `/products` routes stay behind authentication.
+
+- **What is visible.** A product that is `ACTIVE`, not archived, priced in **PKR** and with a price
+  above zero. Sold-out products are listed, with `inStock: false`. A product priced in another
+  currency is never shown under a PKR label and never converted: reprice it (`PATCH /products/:id`
+  with `currency: "PKR"` and the new `price`) to publish it. `/storefront/catalog-readiness` lists
+  what is being held back.
+- **What is returned.** `id`, `name`, `subtitle`, `description`, `brand`, `category { id, name }`,
+  `price`, `currency`, `image { url, alt }` (`null` without one), `gallery` and `inStock`. Never the
+  internal id, SKU, cost price, version, exact stock or history. The client sends no visibility or
+  status filter; there is none to send.
+- **Work happens on the server.** Search, category filter, sort and pagination are one database
+  query; the client renders the page it is given and its `meta`.
+- **Limits.** 300 requests a minute per client address on the two public reads.
 
 ### Deactivating and deleting users
 
