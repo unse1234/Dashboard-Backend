@@ -1,5 +1,6 @@
 import type {
   AddressType,
+  Currency,
   OrderStatus,
   Prisma,
 } from '../generated/prisma/client';
@@ -42,8 +43,10 @@ export interface CustomerOrderSummaryDto {
   /** Public id, "ORD-<number>". */
   id: string;
   customerId: string;
-  /** In USD. */
+  /** In `currency`. */
   total: number;
+  /** What `total` is denominated in. */
+  currency: Currency;
   status: OrderStatus;
   /** ISO 8601. */
   createdAt: string;
@@ -122,6 +125,7 @@ export function toCustomerAddress(
 export const orderSummarySelect = {
   number: true,
   total: true,
+  currency: true,
   status: true,
   createdAt: true,
 } satisfies Prisma.OrderSelect;
@@ -134,6 +138,7 @@ export function toCustomerOrderSummary(
     id: formatOrderId(order.number),
     customerId: formatCustomerId(customerNumber),
     total: toAmount(order.total),
+    currency: order.currency,
     status: order.status,
     createdAt: order.createdAt.toISOString(),
   };

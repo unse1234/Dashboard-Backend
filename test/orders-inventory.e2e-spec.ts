@@ -204,6 +204,35 @@ describe('Orders and stock (e2e)', () => {
       expect(read).toEqual(order);
     });
 
+    it('stamps the order with the currency its products are priced in', async () => {
+      const rupees = await createProduct(ctx.prisma, {
+        price: '2800.00',
+        currency: 'PKR',
+      });
+      const dollars = await createProduct(ctx.prisma, { price: '10.00' });
+      const customer = await createCustomer(ctx.prisma);
+
+      const pkr = await place(
+        orderFor(customer, [{ product: rupees, quantity: 2 }]),
+      ).expect(201);
+      expect(pkr.body).toMatchObject({
+        currency: 'PKR',
+        paymentMethod: null,
+        total: 5600,
+      });
+
+      const usd = await place(
+        orderFor(customer, [{ product: dollars, quantity: 1 }]),
+      ).expect(201);
+      expect(usd.body).toMatchObject({ currency: 'USD', total: 10 });
+
+      const stored = await ctx.prisma.order.findMany({
+        select: { currency: true },
+        orderBy: { number: 'asc' },
+      });
+      expect(stored.map((o) => o.currency)).toEqual(['PKR', 'USD']);
+    });
+
     it('records the stock change on each product, with the order and no author', async () => {
       const mug = await createProduct(ctx.prisma, { stock: 10 });
       const customer = await createCustomer(ctx.prisma);
@@ -432,6 +461,34 @@ describe('Orders and stock (e2e)', () => {
           orderFor(customer, [{ product: last, quantity: 1 }]),
         ).expect(409);
         expect(await stockOf(last)).toBe(0);
+      });
+
+      it('refuses an order that mixes currencies, and takes nothing', async () => {
+        const dollars = await createProduct(ctx.prisma, {
+          price: '10.00',
+          currency: 'USD',
+        });
+        const rupees = await createProduct(ctx.prisma, {
+          sku: 'PKR-1',
+          price: '2800.00',
+          currency: 'PKR',
+        });
+        const customer = await createCustomer(ctx.prisma);
+
+        const res = await place(
+          orderFor(customer, [
+            { product: dollars, quantity: 1 },
+            { product: rupees, quantity: 1 },
+          ]),
+        ).expect(400);
+
+        expect(res.body.message).toBe(
+          'All products in an order must be priced in the same currency',
+        );
+        expect(await stockOf(dollars)).toBe(10);
+        expect(await stockOf(rupees)).toBe(10);
+        expect(await ctx.prisma.order.count()).toBe(0);
+        expect(await ctx.prisma.productEvent.count()).toBe(0);
       });
 
       it('rolls back the stock when the discount is more than the order is worth', async () => {

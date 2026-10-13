@@ -15,9 +15,11 @@ jest.setTimeout(30_000);
 
 const LIST_ITEM_FIELDS = [
   'createdAt',
+  'currency',
   'customer',
   'id',
   'itemCount',
+  'paymentMethod',
   'paymentStatus',
   'status',
   'total',
@@ -226,6 +228,8 @@ describe('Orders (e2e)', () => {
         },
         status: 'SHIPPED',
         paymentStatus: 'PAID',
+        paymentMethod: null,
+        currency: 'USD',
         itemCount: 1,
         total: 82.5,
         createdAt: order.createdAt.toISOString(),

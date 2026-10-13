@@ -1,5 +1,5 @@
 import { Prisma } from '../generated/prisma/client';
-import { exceedsOrderValue, priceOrder } from './order-pricing';
+import { commonCurrency, exceedsOrderValue, priceOrder } from './order-pricing';
 
 const d = (value: string | number) => new Prisma.Decimal(value);
 const none = { shipping: d(0), discount: d(0), tax: d(0) };
@@ -74,5 +74,21 @@ describe('exceedsOrderValue', () => {
         tax: d('1.00'),
       }),
     ).toBe(true);
+  });
+});
+
+describe('commonCurrency', () => {
+  it('is the currency every line shares', () => {
+    expect(commonCurrency(['PKR'])).toBe('PKR');
+    expect(commonCurrency(['USD', 'USD', 'USD'])).toBe('USD');
+  });
+
+  it('is null for lines that mix currencies, whatever their order', () => {
+    expect(commonCurrency(['USD', 'PKR'])).toBeNull();
+    expect(commonCurrency(['PKR', 'PKR', 'USD'])).toBeNull();
+  });
+
+  it('is null for no lines at all', () => {
+    expect(commonCurrency([])).toBeNull();
   });
 });

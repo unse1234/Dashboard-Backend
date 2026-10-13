@@ -1,4 +1,4 @@
-import { Prisma } from '../generated/prisma/client';
+import { Prisma, type Currency } from '../generated/prisma/client';
 import type { Db } from '../prisma/prisma.service';
 
 /** A product that stock was just taken from, as it was priced at that moment. */
@@ -9,6 +9,8 @@ export interface DeductedStock {
   sku: string;
   /** The selling price at the moment the stock was taken. */
   price: Prisma.Decimal;
+  /** What `price` is denominated in, read in the same statement as the price. */
+  currency: Currency;
   stockBefore: number;
   stockAfter: number;
 }
@@ -25,6 +27,7 @@ interface StockRow {
   name: string;
   sku: string;
   price: string;
+  currency: Currency;
   stock: number;
 }
 
@@ -56,7 +59,8 @@ export async function deductStock(
       AND "status" = 'ACTIVE'
       AND "archivedAt" IS NULL
       AND "stock" >= ${quantity}
-    RETURNING "id", "number", "name", "sku", "price"::text AS "price", "stock"`;
+    RETURNING "id", "number", "name", "sku", "price"::text AS "price",
+              "currency"::text AS "currency", "stock"`;
 
   const row = rows[0];
   if (!row) return null;
@@ -66,6 +70,7 @@ export async function deductStock(
     name: row.name,
     sku: row.sku,
     price: new Prisma.Decimal(row.price),
+    currency: row.currency,
     stockBefore: row.stock + quantity,
     stockAfter: row.stock,
   };

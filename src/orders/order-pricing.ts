@@ -1,4 +1,4 @@
-import { Prisma } from '../generated/prisma/client';
+import { Prisma, type Currency } from '../generated/prisma/client';
 
 export interface PricedLine {
   unitPrice: Prisma.Decimal;
@@ -46,4 +46,17 @@ export function exceedsOrderValue(
   { shipping, discount, tax }: PriceAdjustments,
 ): boolean {
   return discount.greaterThan(subtotal.plus(shipping).plus(tax));
+}
+
+/**
+ * The one currency every line is priced in, or null when the lines mix
+ * currencies (or there are none). Amounts in different currencies are never
+ * added together, and no exchange rate is applied.
+ */
+export function commonCurrency(
+  currencies: readonly Currency[],
+): Currency | null {
+  const first = currencies[0];
+  if (first === undefined) return null;
+  return currencies.every((currency) => currency === first) ? first : null;
 }

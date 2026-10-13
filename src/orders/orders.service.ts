@@ -33,7 +33,7 @@ import {
   describeInvalidTransition,
   paymentStatusAfter,
 } from './order-lifecycle';
-import { exceedsOrderValue, priceOrder } from './order-pricing';
+import { commonCurrency, exceedsOrderValue, priceOrder } from './order-pricing';
 import {
   orderDetailSelect,
   toOrderDto,
@@ -57,6 +57,8 @@ export const CHANGED_MESSAGE =
   'This order was just changed by someone else. Reload it and try again.';
 export const KEY_REUSED_MESSAGE =
   'This Idempotency-Key was already used for a different order';
+export const MIXED_CURRENCY_MESSAGE =
+  'All products in an order must be priced in the same currency';
 
 // ORDER BY expressions per sort column. Only these constants ever reach the SQL
 // as raw text; everything that comes from the request is a bound parameter.
@@ -138,7 +140,8 @@ export class OrdersService {
       this.prisma.$queryRaw<OrderListRow[]>`
         SELECT o."number", c."number" AS "customerNumber", o."customerName",
                o."customerEmail", o."customerPhone", o."status",
-               o."paymentStatus", o."itemCount", o."total", o."createdAt"
+               o."paymentStatus", o."paymentMethod", o."currency",
+               o."itemCount", o."total", o."createdAt"
         FROM "Order" o
         JOIN "Customer" c ON c."id" = o."customerId"
         WHERE ${where}
@@ -241,7 +244,13 @@ export class OrdersService {
 
       const products = await tx.product.findMany({
         where: { number: { in: lines.map((line) => line.number) } },
-        select: { id: true, number: true, status: true, archivedAt: true },
+        select: {
+          id: true,
+          number: true,
+          status: true,
+          archivedAt: true,
+          currency: true,
+        },
       });
       const byNumber = new Map(products.map((p) => [p.number, p]));
       const requested = lines.map((line) => {
@@ -251,8 +260,13 @@ export class OrdersService {
             `Product ${formatPublicId('PRD', line.number)} is not available`,
           );
         }
-        return { ...line, productId: product.id };
+        return { ...line, productId: product.id, currency: product.currency };
       });
+      // Refused before any stock is taken. The currency read together with each
+      // deduction below is the one that counts.
+      if (commonCurrency(requested.map((line) => line.currency)) === null) {
+        throw new BadRequestException(MIXED_CURRENCY_MESSAGE);
+      }
 
       // Always in the same order (by id), so that two orders for overlapping
       // products wait for each other's rows in turn instead of deadlocking.
@@ -271,6 +285,11 @@ export class OrdersService {
         quantity: line.quantity,
         stock: taken.get(line.productId)!,
       }));
+      const currency = commonCurrency(
+        ordered.map(({ stock }) => stock.currency),
+      );
+      if (currency === null)
+        throw new BadRequestException(MIXED_CURRENCY_MESSAGE);
       const price = priceOrder(
         ordered.map(({ quantity, stock }) => ({
           unitPrice: stock.price,
@@ -293,6 +312,7 @@ export class OrdersService {
           customerPhone: customer.phone,
           status: 'PENDING',
           paymentStatus,
+          currency,
           subtotal: price.subtotal,
           shipping: adjustments.shipping,
           discount: adjustments.discount,

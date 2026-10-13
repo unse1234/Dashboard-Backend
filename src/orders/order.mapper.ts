@@ -1,7 +1,9 @@
 import { toAmount, type MoneyValue } from '../common/money';
 import { formatPublicId } from '../common/public-id';
 import type {
+  Currency,
   OrderStatus,
+  PaymentMethod,
   PaymentStatus,
   Prisma,
 } from '../generated/prisma/client';
@@ -37,9 +39,9 @@ export interface OrderItemDto {
   productName: string;
   sku: string;
   quantity: number;
-  /** In USD. */
+  /** In the order's currency. */
   unitPrice: number;
-  /** quantity x unitPrice, in USD. */
+  /** quantity x unitPrice, in the order's currency. */
   total: number;
 }
 
@@ -49,9 +51,13 @@ export interface OrderListItemDto {
   customer: OrderCustomerDto;
   status: OrderStatus;
   paymentStatus: PaymentStatus;
+  /** How it is paid for; null on orders that predate payment methods. */
+  paymentMethod: PaymentMethod | null;
+  /** What every amount of the order is denominated in. */
+  currency: Currency;
   /** Units across all lines. */
   itemCount: number;
-  /** In USD. */
+  /** In `currency`. */
   total: number;
   /** ISO 8601. */
   createdAt: string;
@@ -59,7 +65,7 @@ export interface OrderListItemDto {
 
 export interface OrderDto extends OrderListItemDto {
   items: OrderItemDto[];
-  /** All amounts are in USD. */
+  /** All amounts are in `currency`. */
   subtotal: number;
   shipping: number;
   /** Taken off, as a positive number. */
@@ -80,6 +86,8 @@ export interface OrderListRow {
   customerPhone: string | null;
   status: OrderStatus;
   paymentStatus: PaymentStatus;
+  paymentMethod: PaymentMethod | null;
+  currency: Currency;
   itemCount: number;
   total: MoneyValue;
   createdAt: Date;
@@ -96,6 +104,8 @@ export const orderDetailSelect = {
   customerPhone: true,
   status: true,
   paymentStatus: true,
+  paymentMethod: true,
+  currency: true,
   itemCount: true,
   subtotal: true,
   shipping: true,
@@ -167,6 +177,8 @@ export function toOrderListItem(row: OrderListRow): OrderListItemDto {
     customer: toCustomer(row),
     status: row.status,
     paymentStatus: row.paymentStatus,
+    paymentMethod: row.paymentMethod,
+    currency: row.currency,
     itemCount: row.itemCount,
     total: toAmount(row.total),
     createdAt: row.createdAt.toISOString(),
@@ -183,6 +195,8 @@ export function toOrderDto(row: OrderDetailRow): OrderDto {
       customerPhone: row.customerPhone,
       status: row.status,
       paymentStatus: row.paymentStatus,
+      paymentMethod: row.paymentMethod,
+      currency: row.currency,
       itemCount: row.itemCount,
       total: row.total,
       createdAt: row.createdAt,

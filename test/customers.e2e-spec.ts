@@ -39,6 +39,7 @@ const ADDRESS_FIELDS = [
 ];
 const ORDER_SUMMARY_FIELDS = [
   'createdAt',
+  'currency',
   'customerId',
   'id',
   'status',
@@ -516,6 +517,7 @@ describe('Customers (e2e)', () => {
           id: `ORD-${day5.number}`,
           customerId: cus(customer),
           total: 50,
+          currency: 'USD',
           status: 'PENDING',
           createdAt: '2026-01-05T00:00:00.000Z',
         },
@@ -523,6 +525,7 @@ describe('Customers (e2e)', () => {
           id: `ORD-${day4.number}`,
           customerId: cus(customer),
           total: 40,
+          currency: 'USD',
           status: 'CANCELLED',
           createdAt: '2026-01-04T00:00:00.000Z',
         },
@@ -530,6 +533,7 @@ describe('Customers (e2e)', () => {
           id: `ORD-${day3.number}`,
           customerId: cus(customer),
           total: 30,
+          currency: 'USD',
           status: 'PROCESSING',
           createdAt: '2026-01-03T00:00:00.000Z',
         },
