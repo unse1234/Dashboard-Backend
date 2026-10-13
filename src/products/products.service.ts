@@ -11,6 +11,7 @@ import { numberFromSearch } from '../common/public-id';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import type { CreateProductDto } from './dto/create-product.dto';
+import { createProductInTransaction } from './product-create';
 import type {
   ListProductsQueryDto,
   ProductStatusFilter,
@@ -138,31 +139,7 @@ export class ProductsService {
   ): Promise<ProductDto> {
     try {
       return await this.prisma.$transaction(async (tx) => {
-        await this.assertCategoryExists(tx, dto.categoryId);
-
-        const created = await tx.product.create({
-          data: {
-            name: dto.name,
-            sku: dto.sku,
-            brand: dto.brand ?? null,
-            description: dto.description ?? null,
-            categoryId: dto.categoryId,
-            status: dto.status ?? 'ACTIVE',
-            price: toDecimal(dto.price),
-            costPrice:
-              dto.costPrice === undefined || dto.costPrice === null
-                ? null
-                : toDecimal(dto.costPrice),
-            stock: dto.stock ?? 0,
-          },
-          select: productSelect,
-        });
-        await tx.productEvent.createMany({
-          data: toEventRows(created.id, actor.id, [
-            { type: 'CREATED', data: {} },
-          ]),
-        });
-        return toProductDto(created);
+        return toProductDto(await createProductInTransaction(tx, actor, dto));
       });
     } catch (error) {
       if (isUniqueViolation(error)) {
