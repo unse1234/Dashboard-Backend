@@ -48,3 +48,16 @@ export const storefrontProductColumns = Prisma.sql`
   p."price"::text AS "price", p."currency"::text AS "currency",
   (p."stock" > 0) AS "inStock",
   c."id" AS "categoryId", c."name" AS "categoryName"`;
+
+/** A product row that also carries its stock, for checking a quantity against it. */
+export interface StorefrontStockedProductRow extends StorefrontProductRow {
+  stock: number;
+}
+
+/**
+ * The public columns plus the stock count. For server-side availability checks
+ * only: the count is compared with a quantity and never mapped into a response.
+ */
+export const storefrontStockedProductColumns = Prisma.sql`
+  ${storefrontProductColumns},
+  p."stock" AS "stock"`;

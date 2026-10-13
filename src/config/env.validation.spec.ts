@@ -16,6 +16,19 @@ describe('env validation', () => {
     expect(env.COOKIE_SAMESITE).toBe('strict');
   });
 
+  it('gives a checkout quote 30 minutes unless told otherwise, within limits', () => {
+    expect(validate(valid).QUOTE_TTL_MINUTES).toBe(30);
+    expect(
+      validate({ ...valid, QUOTE_TTL_MINUTES: '5' }).QUOTE_TTL_MINUTES,
+    ).toBe(5);
+    expect(() => validate({ ...valid, QUOTE_TTL_MINUTES: '0' })).toThrow(
+      /QUOTE_TTL_MINUTES/,
+    );
+    expect(() => validate({ ...valid, QUOTE_TTL_MINUTES: '1441' })).toThrow(
+      /QUOTE_TTL_MINUTES/,
+    );
+  });
+
   it('reports every missing required variable in one error', () => {
     expect(() => validate({})).toThrow(/DATABASE_URL[\s\S]*JWT_ACCESS_SECRET/);
   });

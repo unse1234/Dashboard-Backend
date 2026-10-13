@@ -147,6 +147,12 @@ export class EnvironmentVariables {
   @Max(720)
   EMAIL_VERIFICATION_TTL_HOURS: number = 24;
 
+  /** How long a checkout quote can be used to place an order. */
+  @IsInt()
+  @Min(1)
+  @Max(1440)
+  QUOTE_TTL_MINUTES: number = 30;
+
   @IsEnum(MailTransportKind)
   MAIL_TRANSPORT: MailTransportKind = MailTransportKind.Console;
 
