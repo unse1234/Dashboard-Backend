@@ -220,6 +220,24 @@ client calling it cross-origin would need `Idempotency-Key` added to the CORS al
 >
 > Deploy it after `20261012100000_products_and_inventory`.
 
+## Product CSV imports
+
+`ADMIN` and `STAFF` can validate a UTF-8 product CSV at `POST /imports/preview` and
+confirm a valid preview at `POST /imports/:jobId/confirm`. Download the header-only
+template from `GET /imports/templates/products`. Files are limited to 10 MiB and
+250 rows. Product creation and `CREATED` audit events share one transaction: a
+failed row or a catalogue change prevents all writes. The job stores a bounded
+preview for 15 minutes, error reports for seven days, and history for 90 days.
+Only the initiating user can confirm; staff see their own jobs and admins can
+inspect all jobs. The API accepts CSV only; spreadsheets are unsupported.
+
+Deploy `20261012120000_import_jobs` before enabling the dashboard workflow.
+Schedule `npm run imports:cleanup` daily. Each pass recovers up to 100 interrupted
+attempts, removes expired previews and reports, and deletes up to 1,000 old jobs.
+Run it more frequently if imports exceed those daily bounds. The command reads
+the normal validated backend environment and should run against the same database
+as the API.
+
 ## Security model
 
 - Passwords: Argon2id. Unknown accounts, wrong passwords, disabled accounts and invited
@@ -253,6 +271,7 @@ or a local catcher such as Mailpit before relying on it.
 - `npm test` — unit tests.
 - `npm run test:e2e` — HTTP + database integration tests (see below).
 - `npm run admin:create -- --email … --name …` — bootstrap the first admin.
+- `npm run imports:cleanup` — remove expired import data and recover interrupted jobs.
 - `npm run seed:dev -- --confirm [--reset]` — a sample catalogue, customers, addresses and
   orders (order lines refer to the catalogue's products). It never reads `.env`: set
   `DATABASE_URL` explicitly to a development or test database. It refuses `NODE_ENV=production`,
