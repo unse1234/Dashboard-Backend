@@ -63,7 +63,7 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | PATCH | `/users/:id/role` | ADMIN | `{ role: "ADMIN" \| "STAFF" }`; not on yourself; the last active admin is protected. Applies to the user's existing tokens immediately |
 | DELETE | `/users/:id` | ADMIN | Soft delete, `204`; not yourself; the last active admin is protected |
 | GET | `/customers` | ADMIN, STAFF | `?page=1&pageSize=20&search&sortBy&sortOrder` (`pageSize` ≤ 100; `search` matches name, email or phone, case-insensitive, or a customer id such as `CUS-1001` or `1001`; `sortBy` is `id`, `name`, `email`, `totalOrders`, `totalSpent` or `joinedAt`, `sortOrder` is `asc` (default) or `desc`; newest first without `sortBy`) → `{ data, meta: { page, pageSize, total, totalPages } }` |
-| GET | `/customers/:customerId` | ADMIN, STAFF | `{ customer, addresses, recentOrders }` (the 3 latest orders); `404` if unknown, `400` if `:customerId` is not like `CUS-1001` |
+| GET | `/customers/:customerId` | ADMIN, STAFF | `{ customer, addresses, orderAddresses, recentOrders }` (the saved addresses; the distinct delivery addresses recorded on the customer's orders, newest first, at most 10; the 3 latest orders); `404` if unknown, `400` if `:customerId` is not like `CUS-1001` |
 | GET | `/categories` | ADMIN, STAFF | `{ data: [{ id, name }] }`, by name |
 | GET | `/products` | ADMIN, STAFF | `?page=1&pageSize=20&search&categoryId&status` (`pageSize` ≤ 100; `search` matches name or SKU, case-insensitive, or a product id such as `PRD-1001` or `1001`; `categoryId` is a category uuid; `status` is `ACTIVE`, `INACTIVE` or `OUT_OF_STOCK`; newest first) → `{ data, meta: { page, pageSize, total, totalPages } }`. Archived products are never listed |
 | GET | `/products/:productId` | ADMIN, STAFF | One product; `404` if unknown or archived, `400` if `:productId` is not like `PRD-1001` |
@@ -230,6 +230,12 @@ cancelled ones included; `totalSpent` sums the totals of orders that were **not*
 paid or not, so it is the value ordered, not cash collected (an unpaid cash-on-delivery order
 counts);
 `lastOrderAt` is the latest order of any status, or `null`.
+
+A guest checkout saves no address on the customer (so a visitor can never write to an existing
+customer's profile by typing their email): the delivery address lives only on the order.
+`orderAddresses` is how staff see them on the customer: one entry per distinct delivery address
+across the customer's orders (cancelled ones included), each with `lastUsedAt` and how many
+orders went there. It is read from the order snapshots and never creates or changes a saved address.
 
 Orders keep snapshots of the customer, the addresses and the products as they were when placed.
 The database enforces non-negative amounts, `total = subtotal + shipping - discount + tax`,

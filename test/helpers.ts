@@ -264,6 +264,8 @@ export interface OrderOptions {
   /** Defaults to USD, as the column does. */
   currency?: Currency;
   createdAt?: Date;
+  /** Fields to change in the delivery address the order records. */
+  shippingAddress?: Partial<TestAddress>;
   /**
    * Lines of real products, snapshotted at their current price. Replaces the
    * single placeholder line, and `total` is then derived from the lines instead.
@@ -272,7 +274,20 @@ export interface OrderOptions {
   items?: { product: LineProduct; quantity: number }[];
 }
 
-const testAddress = {
+// A type alias, not an interface: only an alias is assignable to Prisma's JSON
+// input, which wants an index signature.
+type TestAddress = {
+  recipientName: string;
+  phone: string | null;
+  addressLine1: string;
+  addressLine2: string | null;
+  city: string;
+  region: string | null;
+  postalCode: string | null;
+  country: string;
+};
+
+const testAddress: TestAddress = {
   recipientName: 'Test Recipient',
   phone: null,
   addressLine1: '1 Test Street',
@@ -360,7 +375,7 @@ export function createOrder(
       discount: fromCents(discount),
       tax: fromCents(tax),
       total: fromCents(total),
-      shippingAddress: testAddress,
+      shippingAddress: { ...testAddress, ...options.shippingAddress },
       billingAddress: testAddress,
       ...(options.createdAt ? { createdAt: options.createdAt } : {}),
       items: { create: itemLines },

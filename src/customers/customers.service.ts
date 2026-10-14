@@ -8,9 +8,11 @@ import {
   orderSummarySelect,
   toCustomerAddress,
   toCustomerListItem,
+  toCustomerOrderAddress,
   toCustomerOrderSummary,
   type CustomerDetailsDto,
   type CustomerListItem,
+  type CustomerOrderAddressRow,
   type CustomerRow,
 } from './customer.mapper';
 import type {
@@ -20,6 +22,9 @@ import type {
 
 /** How many of a customer's latest orders the details page lists. */
 export const RECENT_ORDERS_LIMIT = 3;
+
+/** How many distinct delivery addresses from a customer's orders it lists. */
+export const ORDER_ADDRESSES_LIMIT = 10;
 
 export interface CustomerPage {
   data: CustomerListItem[];
@@ -147,6 +152,18 @@ export class CustomersService {
             { id: 'asc' },
           ],
         });
+        // Where the orders went, which is the only record of a guest's address:
+        // identical snapshots are one entry, newest use first. Cancelled orders
+        // count, since the customer did give that address.
+        const orderAddresses = await tx.$queryRaw<CustomerOrderAddressRow[]>`
+          SELECT o."shippingAddress" AS "address",
+                 max(o."createdAt") AS "lastUsedAt",
+                 count(*)::int AS "orderCount"
+          FROM "Order" o
+          WHERE o."customerId" = ${row.id}
+          GROUP BY o."shippingAddress"
+          ORDER BY max(o."createdAt") DESC, o."shippingAddress"::text ASC
+          LIMIT ${ORDER_ADDRESSES_LIMIT}`;
         const orders = await tx.order.findMany({
           where: { customerId: row.id },
           select: orderSummarySelect,
@@ -156,6 +173,7 @@ export class CustomersService {
         return {
           customer: toCustomerListItem(row),
           addresses: addresses.map((a) => toCustomerAddress(row.number, a)),
+          orderAddresses: orderAddresses.map(toCustomerOrderAddress),
           recentOrders: orders.map((o) =>
             toCustomerOrderSummary(row.number, o),
           ),

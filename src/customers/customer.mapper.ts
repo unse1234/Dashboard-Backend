@@ -5,6 +5,7 @@ import type {
   Prisma,
 } from '../generated/prisma/client';
 import { toAmount } from '../common/money';
+import { toAddress, type OrderAddressDto } from '../orders/order.mapper';
 import { formatCustomerId, formatOrderId } from './customer-id';
 
 /** A customer as the list and the details page show it. */
@@ -61,10 +62,45 @@ export interface CustomerOrderSummaryDto {
   createdAt: string;
 }
 
+/**
+ * An address a customer's orders were delivered to, as the order recorded it.
+ *
+ * A guest checkout saves no `CustomerAddress` (the address lives only on the
+ * order, so a visitor can never write to an existing customer's profile by
+ * typing their email). This is how staff see those addresses on the customer.
+ */
+export interface CustomerOrderAddressDto {
+  address: OrderAddressDto;
+  /** ISO 8601: when the newest order that used this address was placed. */
+  lastUsedAt: string;
+  /** How many of the customer's orders were delivered to it. */
+  orderCount: number;
+}
+
 export interface CustomerDetailsDto {
   customer: CustomerListItem;
+  /** What the customer saved, grouped by the page. */
   addresses: CustomerAddressDto[];
+  /** Where their orders were delivered, newest first; see the type. */
+  orderAddresses: CustomerOrderAddressDto[];
   recentOrders: CustomerOrderSummaryDto[];
+}
+
+/** A row of the delivery-address query in customers.service.ts. */
+export interface CustomerOrderAddressRow {
+  address: Prisma.JsonValue;
+  lastUsedAt: Date;
+  orderCount: number;
+}
+
+export function toCustomerOrderAddress(
+  row: CustomerOrderAddressRow,
+): CustomerOrderAddressDto {
+  return {
+    address: toAddress(row.address),
+    lastUsedAt: row.lastUsedAt.toISOString(),
+    orderCount: row.orderCount,
+  };
 }
 
 /** A row of the customer query in customers.service.ts. */

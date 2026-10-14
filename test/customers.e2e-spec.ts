@@ -526,6 +526,7 @@ describe('Customers (e2e)', () => {
       expect(keysOf(res.body)).toEqual([
         'addresses',
         'customer',
+        'orderAddresses',
         'recentOrders',
       ]);
       expect(res.body.customer).toEqual({
@@ -560,6 +561,24 @@ describe('Customers (e2e)', () => {
         country: 'United States',
         isDefault: true,
       });
+
+      // All five orders went to the same address: one entry, used five times.
+      expect(res.body.orderAddresses).toEqual([
+        {
+          address: {
+            recipientName: 'Test Recipient',
+            phone: null,
+            addressLine1: '1 Test Street',
+            addressLine2: null,
+            city: 'Springfield',
+            region: null,
+            postalCode: '12345',
+            country: 'United States',
+          },
+          lastUsedAt: '2026-01-05T00:00:00.000Z',
+          orderCount: 5,
+        },
+      ]);
 
       expect(res.body.recentOrders).toEqual([
         {
@@ -608,7 +627,112 @@ describe('Customers (e2e)', () => {
           lastOrderAt: null,
         },
         addresses: [],
+        orderAddresses: [],
         recentOrders: [],
+      });
+    });
+
+    describe('delivery addresses recorded on orders', () => {
+      const ORDER_ADDRESS_FIELDS = ['address', 'lastUsedAt', 'orderCount'];
+
+      it('lists where a guest’s orders went, although no address was saved for them', async () => {
+        // What a guest checkout leaves: a customer, orders, no CustomerAddress.
+        const guest = await createCustomer(ctx.prisma, { name: 'Guest Buyer' });
+        const home = {
+          recipientName: 'Guest Buyer',
+          phone: '+923001234567',
+          addressLine1: 'House 4, Street 9',
+          addressLine2: null,
+          city: 'Dera Ismail Khan',
+          region: 'KPK',
+          postalCode: '29111',
+          country: 'PK',
+        };
+        const office = { ...home, addressLine1: 'Office 2, Main Road' };
+        await createOrder(ctx.prisma, guest, {
+          shippingAddress: home,
+          createdAt: at('2026-02-01T00:00:00Z'),
+        });
+        await createOrder(ctx.prisma, guest, {
+          shippingAddress: office,
+          createdAt: at('2026-02-03T00:00:00Z'),
+        });
+        // The same address again, on a cancelled order: still where they asked
+        // for it to go.
+        await createOrder(ctx.prisma, guest, {
+          shippingAddress: home,
+          status: 'CANCELLED',
+          createdAt: at('2026-02-05T00:00:00Z'),
+        });
+
+        const res = await get(`/customers/${cus(guest)}`).expect(200);
+
+        expect(res.body.addresses).toEqual([]);
+        expect(res.body.orderAddresses).toEqual([
+          {
+            // Used last on the 5th (the cancelled order), so it comes first.
+            address: home,
+            lastUsedAt: '2026-02-05T00:00:00.000Z',
+            orderCount: 2,
+          },
+          {
+            address: office,
+            lastUsedAt: '2026-02-03T00:00:00.000Z',
+            orderCount: 1,
+          },
+        ]);
+        for (const entry of res.body.orderAddresses) {
+          expect(keysOf(entry)).toEqual(ORDER_ADDRESS_FIELDS);
+          expect(keysOf(entry.address)).toEqual([
+            'addressLine1',
+            'addressLine2',
+            'city',
+            'country',
+            'phone',
+            'postalCode',
+            'recipientName',
+            'region',
+          ]);
+        }
+      });
+
+      it('never shows another customer’s orders’ addresses', async () => {
+        const one = await createCustomer(ctx.prisma);
+        const two = await createCustomer(ctx.prisma);
+        await createOrder(ctx.prisma, two, {
+          shippingAddress: { addressLine1: 'Not for customer one' },
+        });
+
+        const res = await get(`/customers/${cus(one)}`).expect(200);
+        expect(res.body.orderAddresses).toEqual([]);
+      });
+
+      it('lists at most ten distinct addresses, the newest first', async () => {
+        const buyer = await createCustomer(ctx.prisma);
+        for (let day = 1; day <= 12; day++) {
+          await createOrder(ctx.prisma, buyer, {
+            shippingAddress: { addressLine1: `${day} Long Road` },
+            createdAt: new Date(Date.UTC(2026, 2, day)),
+          });
+        }
+
+        const res = await get(`/customers/${cus(buyer)}`).expect(200);
+        const lines = (
+          res.body.orderAddresses as { address: { addressLine1: string } }[]
+        ).map((entry) => entry.address.addressLine1);
+        expect(lines).toEqual(
+          Array.from({ length: 10 }, (_, i) => `${12 - i} Long Road`),
+        );
+      });
+
+      it('does not reveal an internal id', async () => {
+        const buyer = await createCustomer(ctx.prisma);
+        const order = await createOrder(ctx.prisma, buyer);
+
+        const res = await get(`/customers/${cus(buyer)}`).expect(200);
+        const raw = JSON.stringify(res.body.orderAddresses);
+        expect(raw).not.toContain(order.id);
+        expect(raw).not.toContain(buyer.id);
       });
     });
 
@@ -627,6 +751,7 @@ describe('Customers (e2e)', () => {
       await createOrder(ctx.prisma, two);
       const res = await get(`/customers/${cus(one)}`).expect(200);
       expect(res.body.addresses).toEqual([]);
+      expect(res.body.orderAddresses).toEqual([]);
       expect(res.body.recentOrders).toEqual([]);
       expect(res.body.customer.totalOrders).toBe(0);
     });
