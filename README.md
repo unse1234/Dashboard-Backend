@@ -80,6 +80,7 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | GET | `/storefront/products/:productId` | public | One visible product. Unknown, malformed, switched-off, archived and not-priced-in-PKR ids are the same `404` |
 | POST | `/storefront/bag/quote` | public | `{ items: [{ productId, quantity }], action?: { type, productId, quantity? } }` → `200 { currency, items, subtotal, lineCount, unitCount, hasIssues }`. `type` is `add`, `increment`, `decrement`, `set` or `remove`. The server merges, counts and prices; nothing is stored or reserved. See the section below |
 | POST | `/storefront/checkout/quote` | public | `{ items, shippingAddress: { recipientName, addressLine1, addressLine2?, city, region, postalCode?, country, phone? } }` → `200 { currency, paymentMethod: "COD", items, subtotal, shipping, tax, discount, total, quoteToken, expiresAt }`. `409` (with `issues`) when a line cannot be bought; `400 UNSUPPORTED_DESTINATION` outside Pakistan |
+| POST | `/storefront/orders` | public | Places a cash-on-delivery order. Needs an `Idempotency-Key` header. `{ contact: { name, email, phone }, items: [{ productId, quantity }], shippingAddress, quoteToken }` → `201` with the receipt `{ id, createdAt, status, paymentStatus, paymentMethod, currency, items, subtotal, shipping, tax, discount, total }`. `409` with a `code`: `QUOTE_CHANGED` (with `reason`), `PRODUCT_UNAVAILABLE`, `INSUFFICIENT_STOCK`, `IDEMPOTENCY_CONFLICT`. See the section below |
 | GET | `/storefront/catalog-readiness` | ADMIN, STAFF | `{ currency, eligible, excludedCount, excluded: [{ id, name, currency, price }] }`: the active products the storefront hides because they are not priced in PKR (first 100) |
 
 Unverified users can sign in and use the `/auth/*` account routes; everything else
@@ -147,13 +148,55 @@ the shopper did (`action`) and renders what comes back.
 - **`quoteToken`.** Opaque and stateless: the items (in id order), their unit prices, the
   destination country and province, and the amounts, signed with HMAC-SHA256 under a key derived
   from `JWT_ACCESS_SECRET` (not the access-token key itself). The client stores and echoes it; it
-  cannot make or change one. It lasts `QUOTE_TTL_MINUTES` (default 30). Placing the order with it
-  is the next piece of the storefront.
+  cannot make or change one. It lasts `QUOTE_TTL_MINUTES` (default 30). `POST /storefront/orders`
+  takes it back (see the next section).
 - **Address.** Pakistan only: `country` is `PK` or `Pakistan`; anything else is
   `UNSUPPORTED_DESTINATION`. The recipient, street, city and province are required; the postal code,
   when given, is five digits; a phone, when given, must be a Pakistani mobile or landline in any of
   the usual spellings (`0300 1234567`, `+92 300 1234567`, `042 35761234`).
 - **Errors.** Business refusals carry a `code` next to the usual `statusCode`, `error` and `message`.
+
+### Placing a guest order
+
+`POST /storefront/orders` needs no sign-in and no customer id. It is a separate controller with its
+own DTO and receipt; the dashboard's `POST /orders` (administrators, amounts and statuses in the
+body) is not exposed. The body has **no** field for a customer, an amount, a charge, a status, a
+currency or a card, and unknown fields are `400`: the server sets PKR, cash on delivery, `PENDING`
+order and payment status and zero shipping, tax and discount, and prices every line itself.
+
+- **Contact.** `name`, `email` and `phone` are required, the phone a Pakistani number (kept as
+  typed). The delivery address is also the billing address in V1, and the order keeps the submitted
+  values as snapshots.
+- **Customer.** Found or created by lower-cased email inside the order's transaction. An existing
+  customer's name, phone and addresses are never overwritten, no saved address is created, and the
+  response says nothing about whether the customer existed. Matching is by email only (not name or
+  phone) and ignores case, including rows stored before emails were lower-cased. Two first
+  purchases with one email at once make one customer.
+- **The quote is held.** The token must be one this server issued and unexpired, for the same
+  items (any order) and province, and the unit prices and amounts must still match it to the cent,
+  or the answer is `409 QUOTE_CHANGED` with `reason`: `TOKEN_INVALID`, `QUOTE_EXPIRED`,
+  `ITEMS_CHANGED`, `DESTINATION_CHANGED`, `PRICES_CHANGED` or `TOTAL_CHANGED`. Nothing is written;
+  the client asks for a new checkout quote and shows it. An order is never placed at a different
+  amount than the guest reviewed.
+- **Stock.** Taken in the same transaction by a conditional update, so the last unit goes to one
+  buyer. A failed line rolls back the customer, the other lines' stock and the order.
+  `409 INSUFFICIENT_STOCK` or `409 PRODUCT_UNAVAILABLE` carries the `productId` and never a count
+  or a SKU.
+- **Retrying.** The client sends a random `Idempotency-Key` (8-100 letters, digits, `-`, `_`; a UUID
+  works) and, after a timeout, repeats the same request with the same key and the same token. The
+  same key and request returns the order already placed (`201`, same receipt) **before** the quote,
+  the price or the stock are looked at, so it still works after the quote expired or the catalogue
+  moved on, and cannot deduct twice. The same key with a different body (including a renewed
+  quote) is `409 IDEMPOTENCY_CONFLICT`. Guest keys are stored as `sf:<key>`; dashboard keys cannot
+  contain `:`, so the two never collide. `Idempotency-Key` is in the CORS allow-list.
+- **Receipt.** Reference (`ORD-...`), time, current statuses, method, currency, lines
+  (`productId`, `productName`, `quantity`, `unitPrice`, `total`) and amounts. No customer data,
+  internal ids, SKU, idempotency key, request hash, actor or history. The reference identifies the
+  order for display; it is not a credential and there is no endpoint that looks an order up by it.
+- **Limits.** 10 requests a minute per client address.
+- **In the dashboard.** The order and customer appear through the existing queries, with
+  `paymentMethod: "COD"`, `currency: "PKR"` and no actor on the `CREATED` event. Cancelling it
+  returns the stock once. Shipping it unpaid is the next phase (COD admin flow).
 
 ### Deactivating and deleting users
 
