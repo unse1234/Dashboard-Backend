@@ -30,6 +30,12 @@ export interface ProductDto {
   currency: Currency;
   /** What the product costs the business, in `currency`; null when unknown. */
   costPrice: number | null;
+  /**
+   * Profit as a share of the selling price, to four decimals (0.255 is 25.5%):
+   * negative when it sells below cost. Null without a cost price, or at a price
+   * of zero. Worked out here, in exact decimals, not by each screen.
+   */
+  margin: number | null;
   stock: number;
   /**
    * Changes with every write. An edit must send the version it loaded, and is
@@ -80,6 +86,15 @@ export type ProductRow = Prisma.ProductGetPayload<{
   select: typeof productSelect;
 }>;
 
+/** (price - cost) / price in exact decimals, rounded to four places. */
+export function marginOf(
+  price: Prisma.Decimal,
+  costPrice: Prisma.Decimal | null,
+): number | null {
+  if (costPrice === null || price.isZero()) return null;
+  return price.minus(costPrice).div(price).toDecimalPlaces(4).toNumber();
+}
+
 export function toProductDto(row: ProductRow): ProductDto {
   return {
     id: formatPublicId('PRD', row.number),
@@ -96,6 +111,7 @@ export function toProductDto(row: ProductRow): ProductDto {
     price: toAmount(row.price),
     currency: row.currency,
     costPrice: row.costPrice === null ? null : toAmount(row.costPrice),
+    margin: marginOf(row.price, row.costPrice),
     stock: row.stock,
     version: row.version,
     createdAt: row.createdAt.toISOString(),

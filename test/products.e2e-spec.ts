@@ -25,6 +25,7 @@ const PRODUCT_FIELDS = [
   'galleryUrls',
   'id',
   'imageUrl',
+  'margin',
   'name',
   'price',
   'sku',
@@ -46,6 +47,7 @@ interface ProductBody {
   status: 'ACTIVE' | 'INACTIVE';
   price: number;
   costPrice: number | null;
+  margin: number | null;
   stock: number;
   version: number;
   createdAt: string;
@@ -252,6 +254,7 @@ describe('Products (e2e)', () => {
         imageUrl: null,
         galleryUrls: [],
         costPrice: 4.25,
+        margin: 0.66,
         stock: 7,
         version: 1,
         createdAt: product.createdAt.toISOString(),
