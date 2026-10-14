@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -15,11 +16,7 @@ import {
 } from '../common/public-id';
 import { Prisma, type OrderStatus } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
-import {
-  deductStock,
-  restoreStock,
-  type DeductedStock,
-} from '../products/inventory';
+import { restoreStock } from '../products/inventory';
 import { toEventRows } from '../products/product-events';
 import type {
   CreateOrderDto,
@@ -34,11 +31,10 @@ import {
   paymentStatusAfter,
 } from './order-lifecycle';
 import {
-  commonCurrency,
-  exceedsMaxOrderAmount,
-  exceedsOrderValue,
-  priceOrder,
-} from './order-pricing';
+  PlacementError,
+  placeOrder,
+  type PlacementFailure,
+} from './order-placement';
 import {
   orderDetailSelect,
   toOrderDto,
@@ -113,6 +109,30 @@ function listFilter(query: ListOrdersQueryDto): Prisma.Sql {
   return conditions.length > 0
     ? Prisma.join(conditions, ' AND ')
     : Prisma.sql`TRUE`;
+}
+
+/** The dashboard's wording of a placement failure; it may name a SKU and a count. */
+function adminException(failure: PlacementFailure): HttpException {
+  switch (failure.kind) {
+    case 'PRODUCT_UNAVAILABLE':
+      return new BadRequestException(
+        failure.productNumber === null
+          ? 'A product in the order is not available'
+          : `Product ${formatPublicId('PRD', failure.productNumber)} is not available`,
+      );
+    case 'INSUFFICIENT_STOCK':
+      return new ConflictException(
+        `Not enough stock for ${failure.sku} (${failure.available} available)`,
+      );
+    case 'MIXED_CURRENCY':
+      return new BadRequestException(MIXED_CURRENCY_MESSAGE);
+    case 'DISCOUNT_TOO_LARGE':
+      return new BadRequestException(
+        "The discount can't be more than the order is worth",
+      );
+    case 'TOO_LARGE':
+      return new BadRequestException(TOO_LARGE_MESSAGE);
+  }
 }
 
 const snapshotOf = (address: OrderAddressInputDto): Prisma.InputJsonObject => ({
@@ -249,137 +269,26 @@ export class OrdersService {
       });
       if (!customer) throw new NotFoundException('Customer not found');
 
-      const products = await tx.product.findMany({
-        where: { number: { in: lines.map((line) => line.number) } },
-        select: {
-          id: true,
-          number: true,
-          status: true,
-          archivedAt: true,
-          currency: true,
-        },
-      });
-      const byNumber = new Map(products.map((p) => [p.number, p]));
-      const requested = lines.map((line) => {
-        const product = byNumber.get(line.number);
-        if (!product || product.status !== 'ACTIVE' || product.archivedAt) {
-          throw new BadRequestException(
-            `Product ${formatPublicId('PRD', line.number)} is not available`,
-          );
-        }
-        return { ...line, productId: product.id, currency: product.currency };
-      });
-      // Refused before any stock is taken. The currency read together with each
-      // deduction below is the one that counts.
-      if (commonCurrency(requested.map((line) => line.currency)) === null) {
-        throw new BadRequestException(MIXED_CURRENCY_MESSAGE);
-      }
-
-      // Always in the same order (by id), so that two orders for overlapping
-      // products wait for each other's rows in turn instead of deadlocking.
-      const byProductId = [...requested].sort((a, b) =>
-        a.productId < b.productId ? -1 : a.productId > b.productId ? 1 : 0,
-      );
-      const taken = new Map<string, DeductedStock>();
-      for (const { productId, quantity } of byProductId) {
-        const deducted = await deductStock(tx, productId, quantity);
-        if (!deducted) throw await this.whyNoStock(tx, productId);
-        taken.set(productId, deducted);
-      }
-
-      // Back in the order the lines were sent in, which is how they will list.
-      const ordered = requested.map((line) => ({
-        quantity: line.quantity,
-        stock: taken.get(line.productId)!,
-      }));
-      const currency = commonCurrency(
-        ordered.map(({ stock }) => stock.currency),
-      );
-      if (currency === null)
-        throw new BadRequestException(MIXED_CURRENCY_MESSAGE);
-      const price = priceOrder(
-        ordered.map(({ quantity, stock }) => ({
-          unitPrice: stock.price,
-          quantity,
-        })),
-        adjustments,
-      );
-      if (exceedsOrderValue(price, adjustments)) {
-        throw new BadRequestException(
-          "The discount can't be more than the order is worth",
-        );
-      }
-      // Before the insert, so a big order is refused cleanly (and the stock it
-      // took rolled back) instead of failing inside the database.
-      if (
-        exceedsMaxOrderAmount(price.subtotal) ||
-        exceedsMaxOrderAmount(price.total)
-      ) {
-        throw new BadRequestException(TOO_LARGE_MESSAGE);
-      }
-
-      const order = await tx.order.create({
-        data: {
-          customerId: customer.id,
-          // Snapshots: the order keeps reading the same if these change.
-          customerName: customer.name,
-          customerEmail: customer.email,
-          customerPhone: customer.phone,
-          status: 'PENDING',
+      try {
+        const order = await placeOrder(tx, {
+          customer,
+          lines,
+          adjustments,
           paymentStatus,
-          currency,
-          subtotal: price.subtotal,
-          shipping: adjustments.shipping,
-          discount: adjustments.discount,
-          tax: adjustments.tax,
-          total: price.total,
+          // Orders placed here keep the null "unspecified" method, as before.
+          paymentMethod: null,
           shippingAddress,
           billingAddress,
-          itemCount: ordered.reduce((sum, line) => sum + line.quantity, 0),
-          idempotencyKey: key,
-          requestHash,
-          items: {
-            create: ordered.map(({ quantity, stock }, index) => ({
-              productId: formatPublicId('PRD', stock.number),
-              productName: stock.name,
-              sku: stock.sku,
-              quantity,
-              unitPrice: stock.price,
-              total: price.lineTotals[index],
-              position: index,
-              catalogProductId: stock.id,
-            })),
-          },
-        },
-        select: orderDetailSelect,
-      });
-
-      await tx.productEvent.createMany({
-        data: [...taken.values()].flatMap((stock) =>
-          toEventRows(stock.id, null, [
-            {
-              type: 'STOCK_CHANGED',
-              data: {
-                from: stock.stockBefore,
-                to: stock.stockAfter,
-                reason: 'ORDER_PLACED',
-                orderNumber: order.number,
-              },
-            },
-          ]),
-        ),
-      });
-      await tx.orderEvent.create({
-        data: {
-          orderId: order.id,
-          type: 'CREATED',
-          toStatus: 'PENDING',
-          toPaymentStatus: paymentStatus,
           actorId: actor.id,
-        },
-      });
-
-      return toOrderDto(order);
+          key,
+          requestHash,
+        });
+        return toOrderDto(order);
+      } catch (error) {
+        throw error instanceof PlacementError
+          ? adminException(error.failure)
+          : error;
+      }
     });
   }
 
@@ -517,30 +426,6 @@ export class OrdersService {
       select: orderDetailSelect,
     });
     return toOrderDto(order);
-  }
-
-  /** Why nothing could be taken from a product: gone, switched off, or not enough. */
-  private async whyNoStock(db: Db, productId: string): Promise<Error> {
-    const product = await db.product.findUnique({
-      where: { id: productId },
-      select: {
-        number: true,
-        sku: true,
-        stock: true,
-        status: true,
-        archivedAt: true,
-      },
-    });
-    if (!product || product.status !== 'ACTIVE' || product.archivedAt) {
-      return new BadRequestException(
-        product
-          ? `Product ${formatPublicId('PRD', product.number)} is not available`
-          : 'A product in the order is not available',
-      );
-    }
-    return new ConflictException(
-      `Not enough stock for ${product.sku} (${product.stock} available)`,
-    );
   }
 
   /** Puts back what an order took, and records it on each product's history. */
