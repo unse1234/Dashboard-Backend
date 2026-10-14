@@ -75,7 +75,7 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | GET | `/orders/:orderId` | ADMIN, STAFF | The order with its lines, amounts and address snapshots; `404` if unknown, `400` if `:orderId` is not like `ORD-10001` |
 | POST | `/orders` | ADMIN | Places an order. Needs an `Idempotency-Key` header. `{ customerId, items: [{ productId, quantity }], shippingAddress, billingAddress?, shipping?, discount?, tax?, paymentStatus? }` → `201` with the order. Prices come from the products, never from the request. `409` when there is not enough stock (nothing is taken) or the key was used for a different order |
 | PATCH | `/orders/:orderId/status` | ADMIN, STAFF | `{ status }`. Moves along the lifecycle below; `409` with the reason otherwise. Asking for the status it already has is a no-op `200`. Cancelling returns the stock |
-| PATCH | `/orders/:orderId/payment-status` | ADMIN, STAFF | `{ paymentStatus: "PAID" }` records that the payment arrived; repeating it is harmless; `409` for a cancelled order |
+| PATCH | `/orders/:orderId/payment-status` | ADMIN, STAFF | `{ paymentStatus: "PAID" }` records that the payment arrived (for a cash-on-delivery order, that the cash was collected, before or after it ships); repeating it is harmless; `409` for a cancelled order |
 | GET | `/storefront/products` | public | `?page=1&pageSize=20&search&categoryId&sort` (`page` ≤ 10000, `pageSize` ≤ 100; `search` matches name, subtitle or brand, case-insensitive, `%` and `_` literal; `sort` is `newest` (default), `price_asc`, `price_desc` or `name`, each with a stable tie-break) → `{ data, meta: { page, pageSize, total, totalPages } }`. Any other parameter is `400` |
 | GET | `/storefront/products/:productId` | public | One visible product. Unknown, malformed, switched-off, archived and not-priced-in-PKR ids are the same `404` |
 | POST | `/storefront/bag/quote` | public | `{ items: [{ productId, quantity }], action?: { type, productId, quantity? } }` → `200 { currency, items, subtotal, lineCount, unitCount, hasIssues }`. `type` is `add`, `increment`, `decrement`, `set` or `remove`. The server merges, counts and prices; nothing is stored or reserved. See the section below |
@@ -196,7 +196,8 @@ order and payment status and zero shipping, tax and discount, and prices every l
 - **Limits.** 10 requests a minute per client address.
 - **In the dashboard.** The order and customer appear through the existing queries, with
   `paymentMethod: "COD"`, `currency: "PKR"` and no actor on the `CREATED` event. Cancelling it
-  returns the stock once. Shipping it unpaid is the next phase (COD admin flow).
+  returns the stock once. Staff can ship it while its payment is `PENDING`, record the cash when
+  it is collected, and then mark it delivered (see Lifecycle).
 
 ### Deactivating and deleting users
 
@@ -225,7 +226,9 @@ never sign in here, and the API is read-only. Responses use public ids only (`CU
 `DELIVERED`, ...). Amounts are numbers in USD, stored as `NUMERIC(12,2)`.
 
 Statistics are computed from the orders on every read: `totalOrders` counts every order,
-cancelled ones included; `totalSpent` sums the totals of orders that were **not** cancelled;
+cancelled ones included; `totalSpent` sums the totals of orders that were **not** cancelled,
+paid or not, so it is the value ordered, not cash collected (an unpaid cash-on-delivery order
+counts);
 `lastOrderAt` is the latest order of any status, or `null`.
 
 Orders keep snapshots of the customer, the addresses and the products as they were when placed.
@@ -299,11 +302,19 @@ database enforces this as well as the API.
 | `SHIPPED` | `DELIVERED` |
 | `DELIVERED`, `CANCELLED` | nothing |
 
-An order can only be `SHIPPED` or `DELIVERED` once its payment is `PAID`. Cancelling an order
-that was `PAID` records the payment as `REFUNDED` (the refund itself is made outside the
-dashboard; returns and refunds as flows are not implemented). The database enforces which
-statuses and payment statuses go together. Every change is recorded in `OrderEvent` with who
-made it.
+An order can only be `SHIPPED` or `DELIVERED` once its payment is `PAID`, with one exception: a
+`COD` order may be `SHIPPED` while its payment is `PENDING`. Shipping does not record the cash;
+staff do that with `PATCH /orders/:id/payment-status` when it is collected, and only then can the
+order be `DELIVERED` (`409` with "Record the cash payment before marking a cash-on-delivery order
+as delivered." otherwise). Orders without a method keep the rule that they are paid before they
+ship. Cancelling is possible before dispatch only, restores the stock once, and leaves an unpaid
+order's payment `PENDING`; a shipped order, paid or not, cannot be cancelled, so a parcel refused
+at the door needs a returns flow that is not implemented (no automatic cancel or restock).
+Cancelling an order that was `PAID` records the payment as `REFUNDED` (the refund itself is made
+outside the dashboard; returns and refunds as flows are not implemented). The database enforces
+which statuses and payment statuses go together. Every change is recorded in `OrderEvent` with who
+made it. Shipping and recording the payment are independent requests: if two arrive at once, one
+may get `409` ("changed by someone else"), and repeating it is harmless.
 
 **Stock.** Placing an order takes its units from the products' stock in the same transaction
 that creates it, and cancelling it puts them back. There is no reservation step: nothing here
