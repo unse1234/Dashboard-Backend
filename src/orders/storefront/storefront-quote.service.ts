@@ -5,12 +5,8 @@ import { formatPublicId, parsePublicId } from '../../common/public-id';
 import type { Currency } from '../../generated/prisma/client';
 import { STOREFRONT_CURRENCY } from '../../products/storefront/storefront-catalog';
 import { exceedsMaxOrderAmount, priceOrder } from '../order-pricing';
-import {
-  applyBagAction,
-  assertValidBag,
-  BagRuleError,
-  type BagLine,
-} from './bag-engine';
+import { applyBagAction, BagRuleError } from './bag-engine';
+import { canonicalBag } from './bag-input';
 import type { BagQuoteDto, CheckoutQuoteDto } from './dto/bag-quote.dto';
 import { isDeliveryCountry } from './dto/storefront-address.dto';
 import { buildQuoteClaims, DEMO_CHARGES } from './quote-claims';
@@ -72,7 +68,7 @@ export class StorefrontQuoteService {
    * nothing, so the client keeps the bag it had.
    */
   async quoteBag(dto: BagQuoteDto): Promise<BagQuoteResponse> {
-    let lines = this.canonicalLines(dto.items);
+    let lines = canonicalBag(dto.items);
 
     if (dto.action) {
       const { type, productId, quantity } = dto.action;
@@ -130,7 +126,7 @@ export class StorefrontQuoteService {
       );
     }
 
-    const lines = this.canonicalLines(dto.items);
+    const lines = canonicalBag(dto.items);
     const bag = await this.pricing.price(lines);
 
     const blocked = bag.lines.filter((line) => line.issue !== null);
@@ -180,23 +176,6 @@ export class StorefrontQuoteService {
       quoteToken: token,
       expiresAt: expiresAt.toISOString(),
     };
-  }
-
-  /** The DTO's lines as numbers, any id casing folded, and checked as a bag. */
-  private canonicalLines(
-    items: { productId: string; quantity: number }[],
-  ): BagLine[] {
-    try {
-      return assertValidBag(
-        items.map(({ productId, quantity }) => ({
-          // The DTO has already checked that every id is well formed.
-          number: parsePublicId('PRD', productId) as number,
-          quantity,
-        })),
-      );
-    } catch (error) {
-      throw this.invalidBag(error);
-    }
   }
 
   private invalidBag(error: unknown): unknown {

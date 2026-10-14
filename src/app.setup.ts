@@ -44,7 +44,14 @@ export function configureApp(app: NestExpressApplication): void {
       callback(null, !origin || allowedOrigins.has(origin)),
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', CSRF_HEADER],
+    // Idempotency-Key: the storefront's order placement (and a script's) sends it
+    // from the browser, so the preflight has to allow it.
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      CSRF_HEADER,
+      'Idempotency-Key',
+    ],
     maxAge: 600,
   });
 }
