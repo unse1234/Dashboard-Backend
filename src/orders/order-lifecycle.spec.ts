@@ -1,4 +1,8 @@
-import type { OrderStatus, PaymentStatus } from '../generated/prisma/client';
+import type {
+  OrderStatus,
+  PaymentMethod,
+  PaymentStatus,
+} from '../generated/prisma/client';
 import {
   describeInvalidTransition,
   ORDER_TRANSITIONS,
@@ -13,6 +17,30 @@ const STATUSES: OrderStatus[] = [
   'CANCELLED',
 ];
 const PAYMENTS: PaymentStatus[] = ['PENDING', 'PAID', 'REFUNDED'];
+const METHODS: (PaymentMethod | null)[] = [null, 'COD'];
+
+/** An order without a payment method: legacy or unspecified. */
+const LEGACY = null;
+
+const movesFor = (
+  paymentStatus: PaymentStatus,
+  paymentMethod: PaymentMethod | null,
+): [OrderStatus, OrderStatus][] => {
+  const allowed: [OrderStatus, OrderStatus][] = [];
+  for (const from of STATUSES) {
+    for (const to of STATUSES) {
+      // Staying where it is is not a move, so it is not listed either.
+      if (
+        from !== to &&
+        describeInvalidTransition(from, to, paymentStatus, paymentMethod) ===
+          null
+      ) {
+        allowed.push([from, to]);
+      }
+    }
+  }
+  return allowed;
+};
 
 describe('the order lifecycle', () => {
   it('has a rule for every status', () => {
@@ -38,47 +66,88 @@ describe('the order lifecycle', () => {
     expect(ORDER_TRANSITIONS.CANCELLED).toEqual([]);
   });
 
-  it('allows exactly these moves for an order that has been paid', () => {
-    const allowed: [OrderStatus, OrderStatus][] = [];
-    for (const from of STATUSES) {
-      for (const to of STATUSES) {
-        if (describeInvalidTransition(from, to, 'PAID') === null) {
-          allowed.push([from, to]);
-        }
+  it.each(METHODS)(
+    'allows exactly these moves for a paid order (method %s)',
+    (method) => {
+      expect(movesFor('PAID', method)).toEqual([
+        ['PENDING', 'PROCESSING'],
+        ['PENDING', 'SHIPPED'],
+        ['PENDING', 'CANCELLED'],
+        ['PROCESSING', 'SHIPPED'],
+        ['PROCESSING', 'CANCELLED'],
+        ['SHIPPED', 'DELIVERED'],
+      ]);
+    },
+  );
+
+  describe('an order without a payment method', () => {
+    it('refuses to ship or deliver it until it has been paid', () => {
+      for (const payment of ['PENDING', 'REFUNDED'] as const) {
+        expect(
+          describeInvalidTransition('PENDING', 'SHIPPED', payment, LEGACY),
+        ).toBe('An order can only be marked as shipped once it has been paid.');
+        expect(
+          describeInvalidTransition('PROCESSING', 'SHIPPED', payment, LEGACY),
+        ).toBe('An order can only be marked as shipped once it has been paid.');
+        expect(
+          describeInvalidTransition('SHIPPED', 'DELIVERED', payment, LEGACY),
+        ).toBe(
+          'An order can only be marked as delivered once it has been paid.',
+        );
       }
-    }
-    // Staying where it is is not a move, so it is not listed either.
-    expect(allowed.filter(([from, to]) => from !== to)).toEqual([
-      ['PENDING', 'PROCESSING'],
-      ['PENDING', 'SHIPPED'],
-      ['PENDING', 'CANCELLED'],
-      ['PROCESSING', 'SHIPPED'],
-      ['PROCESSING', 'CANCELLED'],
-      ['SHIPPED', 'DELIVERED'],
-    ]);
+    });
+
+    it('lets it be processed or cancelled while unpaid', () => {
+      expect(movesFor('PENDING', LEGACY)).toEqual([
+        ['PENDING', 'PROCESSING'],
+        ['PENDING', 'CANCELLED'],
+        ['PROCESSING', 'CANCELLED'],
+      ]);
+    });
   });
 
-  it('refuses to ship or deliver an order that has not been paid', () => {
-    for (const payment of ['PENDING', 'REFUNDED'] as const) {
-      expect(describeInvalidTransition('PENDING', 'SHIPPED', payment)).toBe(
-        'An order can only be marked as shipped once it has been paid.',
-      );
-      expect(describeInvalidTransition('PROCESSING', 'SHIPPED', payment)).toBe(
-        'An order can only be marked as shipped once it has been paid.',
-      );
-    }
-  });
+  describe('a cash-on-delivery order', () => {
+    it('may be processed, shipped or cancelled while its payment is pending', () => {
+      expect(movesFor('PENDING', 'COD')).toEqual([
+        ['PENDING', 'PROCESSING'],
+        ['PENDING', 'SHIPPED'],
+        ['PENDING', 'CANCELLED'],
+        ['PROCESSING', 'SHIPPED'],
+        ['PROCESSING', 'CANCELLED'],
+      ]);
+    });
 
-  it('lets an unpaid order be processed or cancelled', () => {
-    expect(describeInvalidTransition('PENDING', 'PROCESSING', 'PENDING')).toBe(
-      null,
-    );
-    expect(describeInvalidTransition('PENDING', 'CANCELLED', 'PENDING')).toBe(
-      null,
-    );
-    expect(
-      describeInvalidTransition('PROCESSING', 'CANCELLED', 'PENDING'),
-    ).toBe(null);
+    it('may not be delivered until the cash has been recorded as paid', () => {
+      expect(
+        describeInvalidTransition('SHIPPED', 'DELIVERED', 'PENDING', 'COD'),
+      ).toBe(
+        'Record the cash payment before marking a cash-on-delivery order as delivered.',
+      );
+      expect(
+        describeInvalidTransition('SHIPPED', 'DELIVERED', 'PAID', 'COD'),
+      ).toBeNull();
+    });
+
+    it('is never shipped or delivered with a refunded payment', () => {
+      for (const to of ['SHIPPED', 'DELIVERED'] as const) {
+        expect(
+          describeInvalidTransition(
+            to === 'SHIPPED' ? 'PROCESSING' : 'SHIPPED',
+            to,
+            'REFUNDED',
+            'COD',
+          ),
+        ).not.toBeNull();
+      }
+    });
+
+    it('still cannot be cancelled once it has been shipped', () => {
+      for (const payment of PAYMENTS) {
+        expect(
+          describeInvalidTransition('SHIPPED', 'CANCELLED', payment, 'COD'),
+        ).toBe("A shipped order can't be cancelled.");
+      }
+    });
   });
 
   it.each([
@@ -96,11 +165,18 @@ describe('the order lifecycle', () => {
       'DELIVERED',
       "An order can't go from processing to delivered.",
     ],
-  ] as const)('explains why %s cannot become %s', (from, to, message) => {
-    for (const payment of PAYMENTS) {
-      expect(describeInvalidTransition(from, to, payment)).toBe(message);
-    }
-  });
+  ] as const)(
+    'explains why %s cannot become %s, whatever the payment',
+    (from, to, message) => {
+      for (const payment of PAYMENTS) {
+        for (const method of METHODS) {
+          expect(describeInvalidTransition(from, to, payment, method)).toBe(
+            message,
+          );
+        }
+      }
+    },
+  );
 });
 
 describe('paymentStatusAfter', () => {

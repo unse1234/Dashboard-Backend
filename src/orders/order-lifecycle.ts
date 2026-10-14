@@ -1,4 +1,8 @@
-import type { OrderStatus, PaymentStatus } from '../generated/prisma/client';
+import type {
+  OrderStatus,
+  PaymentMethod,
+  PaymentStatus,
+} from '../generated/prisma/client';
 
 /**
  * Where an order may go next. Forward only: an order is never put back, and
@@ -6,7 +10,9 @@ import type { OrderStatus, PaymentStatus } from '../generated/prisma/client';
  * CANCELLED are final.
  *
  * Returns and refunds as flows are not part of this release, so a shipped order
- * cannot be cancelled.
+ * cannot be cancelled. That includes a cash-on-delivery parcel that was refused
+ * at the door: it needs a returns flow (and a decision about its stock) that
+ * does not exist yet.
  */
 export const ORDER_TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
   PENDING: ['PROCESSING', 'SHIPPED', 'CANCELLED'],
@@ -15,12 +21,6 @@ export const ORDER_TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
   DELIVERED: [],
   CANCELLED: [],
 };
-
-/** Statuses an order may only reach once it has been paid. */
-export const STATUSES_REQUIRING_PAYMENT: readonly OrderStatus[] = [
-  'SHIPPED',
-  'DELIVERED',
-];
 
 const LABELS: Record<OrderStatus, string> = {
   PENDING: 'pending',
@@ -31,14 +31,37 @@ const LABELS: Record<OrderStatus, string> = {
 };
 
 /**
- * Why `from` cannot become `to` for an order with this payment status, written
- * for the person who asked; null when the change is allowed. Moving to the
- * status it already has is not a change, and is for the caller to treat as done.
+ * Whether an order with this payment may be at `to`, a status that needs one
+ * (SHIPPED or DELIVERED). It mirrors the database CHECK
+ * "Order_payment_consistency_check", which is the backstop.
+ *
+ * Cash on delivery is collected when the parcel arrives, so a COD order may
+ * ship while its payment is PENDING. Shipping never implies payment: staff
+ * record it when the cash is in. DELIVERED always needs PAID, and an order
+ * without a method (legacy or unspecified) must be paid before it ships.
+ */
+function paymentAllows(
+  to: OrderStatus,
+  paymentStatus: PaymentStatus,
+  paymentMethod: PaymentMethod | null,
+): boolean {
+  if (paymentStatus === 'PAID') return true;
+  return (
+    to === 'SHIPPED' && paymentMethod === 'COD' && paymentStatus === 'PENDING'
+  );
+}
+
+/**
+ * Why `from` cannot become `to` for an order with this payment status and
+ * method, written for the person who asked; null when the change is allowed.
+ * Moving to the status it already has is not a change, and is for the caller to
+ * treat as done.
  */
 export function describeInvalidTransition(
   from: OrderStatus,
   to: OrderStatus,
   paymentStatus: PaymentStatus,
+  paymentMethod: PaymentMethod | null,
 ): string | null {
   if (from === 'DELIVERED' || from === 'CANCELLED') {
     return `A ${LABELS[from]} order can't change status.`;
@@ -49,7 +72,13 @@ export function describeInvalidTransition(
     }
     return `An order can't go from ${LABELS[from]} to ${LABELS[to]}.`;
   }
-  if (STATUSES_REQUIRING_PAYMENT.includes(to) && paymentStatus !== 'PAID') {
+  if (
+    (to === 'SHIPPED' || to === 'DELIVERED') &&
+    !paymentAllows(to, paymentStatus, paymentMethod)
+  ) {
+    if (paymentMethod === 'COD') {
+      return `Record the cash payment before marking a cash-on-delivery order as ${LABELS[to]}.`;
+    }
     return `An order can only be marked as ${LABELS[to]} once it has been paid.`;
   }
   return null;

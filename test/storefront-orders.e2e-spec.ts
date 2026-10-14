@@ -898,6 +898,41 @@ describe('Storefront order placement (e2e)', () => {
   });
 
   describe('the dashboard still works on these orders', () => {
+    it('lets staff ship a guest order unpaid, record the cash, and deliver it', async () => {
+      const kettle = await listed({ stock: 5 });
+      const res = await place(
+        randomUUID(),
+        await orderFor([line(kettle, 1)]),
+      ).expect(201);
+      const { id } = res.body as Receipt;
+      const status = (value: string) =>
+        http()
+          .patch(`/orders/${id}/status`)
+          .set(bearer(adminToken))
+          .send({ status: value });
+
+      const shipped = await status('SHIPPED').expect(200);
+      expect(shipped.body).toMatchObject({
+        status: 'SHIPPED',
+        paymentStatus: 'PENDING',
+        paymentMethod: 'COD',
+      });
+      await status('DELIVERED').expect(409);
+
+      await http()
+        .patch(`/orders/${id}/payment-status`)
+        .set(bearer(adminToken))
+        .send({ paymentStatus: 'PAID' })
+        .expect(200);
+      const delivered = await status('DELIVERED').expect(200);
+      expect(delivered.body).toMatchObject({
+        status: 'DELIVERED',
+        paymentStatus: 'PAID',
+      });
+      // The unit stays sold.
+      expect(await stockOf(kettle)).toBe(4);
+    });
+
     it('lets staff cancel a guest order, which puts its stock back once', async () => {
       const kettle = await listed({ stock: 5 });
       const res = await place(

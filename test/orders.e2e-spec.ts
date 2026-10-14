@@ -823,6 +823,209 @@ describe('Orders (e2e)', () => {
       expect(await ctx.prisma.orderEvent.count()).toBe(1);
     });
 
+    describe('cash on delivery', () => {
+      const COD_DELIVERY_MESSAGE =
+        'Record the cash payment before marking a cash-on-delivery order as delivered.';
+
+      it('ships unpaid, then needs the cash recorded before delivery', async () => {
+        const { order } = await placedOrder({
+          status: 'PENDING',
+          paymentStatus: 'PENDING',
+          paymentMethod: 'COD',
+        });
+
+        const shipped = await patch(`/orders/${ord(order)}/status`, {
+          status: 'SHIPPED',
+        }).expect(200);
+        // Shipping does not imply that the cash was collected.
+        expect(shipped.body).toMatchObject({
+          status: 'SHIPPED',
+          paymentStatus: 'PENDING',
+          paymentMethod: 'COD',
+        });
+
+        const early = await patch(`/orders/${ord(order)}/status`, {
+          status: 'DELIVERED',
+        }).expect(409);
+        expect(early.body.message).toBe(COD_DELIVERY_MESSAGE);
+        expect(await statusOf(order)).toEqual({
+          status: 'SHIPPED',
+          paymentStatus: 'PENDING',
+        });
+
+        const paid = await patch(`/orders/${ord(order)}/payment-status`, {
+          paymentStatus: 'PAID',
+        }).expect(200);
+        expect(paid.body).toMatchObject({
+          status: 'SHIPPED',
+          paymentStatus: 'PAID',
+        });
+        await patch(`/orders/${ord(order)}/status`, {
+          status: 'DELIVERED',
+        }).expect(200);
+        expect(await statusOf(order)).toEqual({
+          status: 'DELIVERED',
+          paymentStatus: 'PAID',
+        });
+
+        const events = await ctx.prisma.orderEvent.findMany({
+          orderBy: { createdAt: 'asc' },
+        });
+        expect(
+          events.map((e) => [
+            e.type,
+            e.fromStatus,
+            e.toStatus,
+            e.fromPaymentStatus,
+            e.toPaymentStatus,
+          ]),
+        ).toEqual([
+          ['STATUS_CHANGED', 'PENDING', 'SHIPPED', 'PENDING', 'PENDING'],
+          ['PAYMENT_STATUS_CHANGED', null, null, 'PENDING', 'PAID'],
+          ['STATUS_CHANGED', 'SHIPPED', 'DELIVERED', 'PAID', 'PAID'],
+        ]);
+      });
+
+      it('can be shipped from processing, by staff as well as administrators', async () => {
+        const { order } = await placedOrder({
+          status: 'PROCESSING',
+          paymentStatus: 'PENDING',
+          paymentMethod: 'COD',
+        });
+        await patch(
+          `/orders/${ord(order)}/status`,
+          { status: 'SHIPPED' },
+          staffToken,
+        ).expect(200);
+      });
+
+      it('leaves an order without a payment method under the old rule', async () => {
+        const { order } = await placedOrder({
+          status: 'PENDING',
+          paymentStatus: 'PENDING',
+          paymentMethod: null,
+        });
+        const res = await patch(`/orders/${ord(order)}/status`, {
+          status: 'SHIPPED',
+        }).expect(409);
+        expect(res.body.message).toBe(
+          'An order can only be marked as shipped once it has been paid.',
+        );
+        expect(await statusOf(order)).toEqual({
+          status: 'PENDING',
+          paymentStatus: 'PENDING',
+        });
+      });
+
+      it('cannot be cancelled once it is out for delivery, paid or not', async () => {
+        for (const paymentStatus of ['PENDING', 'PAID'] as const) {
+          const { order } = await placedOrder({
+            status: 'SHIPPED',
+            paymentStatus,
+            paymentMethod: 'COD',
+          });
+          const res = await patch(`/orders/${ord(order)}/status`, {
+            status: 'CANCELLED',
+          }).expect(409);
+          expect(res.body.message).toBe("A shipped order can't be cancelled.");
+          expect(await statusOf(order)).toEqual({
+            status: 'SHIPPED',
+            paymentStatus,
+          });
+        }
+      });
+
+      it('puts its stock back once when it is cancelled before dispatch, and stays unpaid', async () => {
+        // 3 left on the shelf after this order took its 2.
+        const product = await createProduct(ctx.prisma, { stock: 3 });
+        const { order } = await placedOrder({
+          status: 'PENDING',
+          paymentStatus: 'PENDING',
+          paymentMethod: 'COD',
+          items: [{ product, quantity: 2 }],
+        });
+
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const res = await patch(`/orders/${ord(order)}/status`, {
+            status: 'CANCELLED',
+          }).expect(200);
+          expect(res.body).toMatchObject({
+            status: 'CANCELLED',
+            paymentStatus: 'PENDING',
+          });
+        }
+
+        const stock = await ctx.prisma.product.findUniqueOrThrow({
+          where: { id: product.id },
+          select: { stock: true },
+        });
+        expect(stock.stock).toBe(5);
+        expect(await ctx.prisma.orderEvent.count()).toBe(1);
+      });
+
+      it('lets exactly one of shipping and cancelling win, and the stock agrees', async () => {
+        const product = await createProduct(ctx.prisma, { stock: 3 });
+        const { order } = await placedOrder({
+          status: 'PENDING',
+          paymentStatus: 'PENDING',
+          paymentMethod: 'COD',
+          items: [{ product, quantity: 2 }],
+        });
+
+        const results = await Promise.all([
+          patch(`/orders/${ord(order)}/status`, { status: 'SHIPPED' }),
+          patch(`/orders/${ord(order)}/status`, { status: 'CANCELLED' }),
+        ]);
+        expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
+
+        const stored = await statusOf(order);
+        const { stock } = await ctx.prisma.product.findUniqueOrThrow({
+          where: { id: product.id },
+          select: { stock: true },
+        });
+        // Shipped keeps the units out; cancelled put them back, once.
+        expect(stock).toBe(stored.status === 'CANCELLED' ? 5 : 3);
+        expect(await ctx.prisma.orderEvent.count()).toBe(1);
+      });
+
+      it('stays consistent when shipping and recording the payment race, and ends shipped and paid', async () => {
+        const { order } = await placedOrder({
+          status: 'PENDING',
+          paymentStatus: 'PENDING',
+          paymentMethod: 'COD',
+        });
+
+        // Not conflicting requests: run back to back both succeed, run at once
+        // one may find the order changed under it and be asked to retry. What
+        // may never happen is a half-applied change.
+        const results = await Promise.all([
+          patch(`/orders/${ord(order)}/status`, { status: 'SHIPPED' }),
+          patch(`/orders/${ord(order)}/payment-status`, {
+            paymentStatus: 'PAID',
+          }),
+        ]);
+        for (const { status } of results) expect([200, 409]).toContain(status);
+        expect(results.some((r) => r.status === 200)).toBe(true);
+        expect([
+          { status: 'SHIPPED', paymentStatus: 'PENDING' },
+          { status: 'PENDING', paymentStatus: 'PAID' },
+          { status: 'SHIPPED', paymentStatus: 'PAID' },
+        ]).toContainEqual(await statusOf(order));
+
+        // Repeating either is harmless, and finishes the job.
+        await patch(`/orders/${ord(order)}/status`, {
+          status: 'SHIPPED',
+        }).expect(200);
+        await patch(`/orders/${ord(order)}/payment-status`, {
+          paymentStatus: 'PAID',
+        }).expect(200);
+        expect(await statusOf(order)).toEqual({
+          status: 'SHIPPED',
+          paymentStatus: 'PAID',
+        });
+      });
+    });
+
     it('answers 404 for an unknown order and 400 for a bad body', async () => {
       await patch('/orders/ORD-999999/status', {
         status: 'PROCESSING',

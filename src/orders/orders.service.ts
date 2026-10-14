@@ -310,7 +310,14 @@ export class OrdersService {
     return this.prisma.$transaction(async (tx) => {
       const current = await tx.order.findUnique({
         where: { number },
-        select: { id: true, status: true, paymentStatus: true },
+        select: {
+          id: true,
+          status: true,
+          paymentStatus: true,
+          // Never changes after the order is placed, so it needs no part in
+          // the compare-and-set below.
+          paymentMethod: true,
+        },
       });
       if (!current) throw new NotFoundException('Order not found');
 
@@ -320,6 +327,7 @@ export class OrdersService {
           current.status,
           target,
           current.paymentStatus,
+          current.paymentMethod,
         );
         if (problem) throw new ConflictException(problem);
 
