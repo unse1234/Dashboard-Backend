@@ -55,12 +55,23 @@ const TIE_BREAK = Prisma.raw('c."createdAt" DESC, c."id" ASC');
 function selectCustomers(where: Prisma.Sql, tail: Prisma.Sql): Prisma.Sql {
   return Prisma.sql`
     SELECT c."id", c."number", c."name", c."email", c."phone", c."createdAt",
-           s."totalOrders", s."totalSpent", s."lastOrderAt"
+           s."totalOrders", s."totalSpent", s."spentByCurrency", s."lastOrderAt"
     FROM "Customer" c
     CROSS JOIN LATERAL (
       SELECT count(*)::int AS "totalOrders",
              COALESCE(sum(o."total") FILTER (WHERE o."status" <> 'CANCELLED'), 0) AS "totalSpent",
-             max(o."createdAt") AS "lastOrderAt"
+             max(o."createdAt") AS "lastOrderAt",
+             -- Per currency, as text so the decimals stay exact. Amounts of
+             -- different currencies are never added together here.
+             COALESCE((
+               SELECT jsonb_object_agg(per."currency", per."amount")
+               FROM (
+                 SELECT p."currency"::text AS "currency", sum(p."total")::text AS "amount"
+                 FROM "Order" p
+                 WHERE p."customerId" = c."id" AND p."status" <> 'CANCELLED'
+                 GROUP BY p."currency"
+               ) per
+             ), '{}'::jsonb) AS "spentByCurrency"
       FROM "Order" o
       WHERE o."customerId" = c."id"
     ) s

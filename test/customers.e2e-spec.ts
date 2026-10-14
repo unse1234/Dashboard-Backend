@@ -20,6 +20,7 @@ const LIST_ITEM_FIELDS = [
   'lastOrderAt',
   'name',
   'phone',
+  'spentByCurrency',
   'totalOrders',
   'totalSpent',
 ];
@@ -54,6 +55,7 @@ interface ListItem {
   joinedAt: string;
   totalOrders: number;
   totalSpent: number;
+  spentByCurrency: { currency: string; amount: number }[];
   lastOrderAt: string | null;
 }
 
@@ -171,6 +173,7 @@ describe('Customers (e2e)', () => {
         joinedAt: '2026-01-02T03:04:05.000Z',
         totalOrders: 1,
         totalSpent: 42.5,
+        spentByCurrency: [{ currency: 'USD', amount: 42.5 }],
         lastOrderAt: '2026-02-01T00:00:00.000Z',
       });
       const raw = JSON.stringify(res.body);
@@ -409,8 +412,53 @@ describe('Customers (e2e)', () => {
         id: cus(browser),
         totalOrders: 0,
         totalSpent: 0,
+        spentByCurrency: [],
         lastOrderAt: null,
       });
+    });
+
+    it('reports what was spent per currency, never added across them, cancelled orders left out', async () => {
+      const buyer = await createCustomer(ctx.prisma, { name: 'Mixed Buyer' });
+      await createOrder(ctx.prisma, buyer, { total: 120.5, currency: 'USD' });
+      await createOrder(ctx.prisma, buyer, {
+        total: 1500,
+        currency: 'PKR',
+        paymentMethod: 'COD',
+        status: 'PENDING',
+      });
+      await createOrder(ctx.prisma, buyer, {
+        total: 2500.25,
+        currency: 'PKR',
+        paymentMethod: 'COD',
+        status: 'SHIPPED',
+        paymentStatus: 'PENDING',
+      });
+      // Counted as an order, but not spent.
+      await createOrder(ctx.prisma, buyer, {
+        total: 9999,
+        currency: 'PKR',
+        status: 'CANCELLED',
+      });
+      const pkrOnly = await createCustomer(ctx.prisma, { name: 'Rupee Buyer' });
+      await createOrder(ctx.prisma, pkrOnly, { total: 700, currency: 'PKR' });
+
+      const list = await get('/customers?sortBy=name').expect(200);
+      const rows = list.body.data as ListItem[];
+      const mixed = rows.find((row) => row.id === cus(buyer))!;
+      expect(mixed.spentByCurrency).toEqual([
+        { currency: 'PKR', amount: 4000.25 },
+        { currency: 'USD', amount: 120.5 },
+      ]);
+      // The bare total is the numbers added together: kept, but not to be shown.
+      expect(mixed.totalSpent).toBe(4120.75);
+      expect(
+        rows.find((row) => row.id === cus(pkrOnly))!.spentByCurrency,
+      ).toEqual([{ currency: 'PKR', amount: 700 }]);
+
+      const details = await get(`/customers/${cus(buyer)}`).expect(200);
+      expect(details.body.customer.spentByCurrency).toEqual(
+        mixed.spentByCurrency,
+      );
     });
 
     it.each([
@@ -488,6 +536,7 @@ describe('Customers (e2e)', () => {
         joinedAt: '2025-12-01T00:00:00.000Z',
         totalOrders: 5,
         totalSpent: 10 + 20 + 30 + 50,
+        spentByCurrency: [{ currency: 'USD', amount: 10 + 20 + 30 + 50 }],
         lastOrderAt: '2026-01-05T00:00:00.000Z',
       });
 
@@ -552,7 +601,12 @@ describe('Customers (e2e)', () => {
       const customer = await createCustomer(ctx.prisma);
       const res = await get(`/customers/${cus(customer)}`).expect(200);
       expect(res.body).toMatchObject({
-        customer: { totalOrders: 0, totalSpent: 0, lastOrderAt: null },
+        customer: {
+          totalOrders: 0,
+          totalSpent: 0,
+          spentByCurrency: [],
+          lastOrderAt: null,
+        },
         addresses: [],
         recentOrders: [],
       });

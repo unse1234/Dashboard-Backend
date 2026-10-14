@@ -18,8 +18,17 @@ export interface CustomerListItem {
   joinedAt: string;
   /** All orders, cancelled ones included. */
   totalOrders: number;
-  /** Sum of the totals of orders that were not cancelled, in USD. */
+  /**
+   * Sum of the totals of orders that were not cancelled, with every currency
+   * added together as a bare number: only meaningful while a customer has orders
+   * in one currency, and kept for sorting. Show `spentByCurrency`.
+   */
   totalSpent: number;
+  /**
+   * The same, per currency, so amounts of different currencies are never added
+   * together. Only currencies the customer has orders in; ordered by currency.
+   */
+  spentByCurrency: { currency: Currency; amount: number }[];
   /** ISO 8601; null until the first order. */
   lastOrderAt: string | null;
 }
@@ -68,6 +77,8 @@ export interface CustomerRow {
   createdAt: Date;
   totalOrders: number;
   totalSpent: Prisma.Decimal | string | number;
+  /** { "PKR": "6499.50", "USD": "120.00" }: decimals as text, to stay exact. */
+  spentByCurrency: Record<string, string> | null;
   lastOrderAt: Date | null;
 }
 
@@ -82,6 +93,12 @@ export function toCustomerListItem(row: CustomerRow): CustomerListItem {
     joinedAt: row.createdAt.toISOString(),
     totalOrders: row.totalOrders,
     totalSpent: toAmount(row.totalSpent),
+    spentByCurrency: Object.entries(row.spentByCurrency ?? {})
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([currency, amount]) => ({
+        currency: currency as Currency,
+        amount: toAmount(amount),
+      })),
     lastOrderAt: row.lastOrderAt ? row.lastOrderAt.toISOString() : null,
   };
 }
