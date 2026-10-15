@@ -7,8 +7,10 @@ import { HttpException, HttpStatus } from '@nestjs/common';
 export type BusinessErrorCode =
   /** The bag itself is malformed: a repeated product, a quantity beyond the limit. */
   | 'INVALID_BAG'
-  /** A product is not for sale (unknown, switched off, archived or not in PKR). */
+  /** A product is not for sale (unknown, switched off, archived or unpriced). */
   | 'PRODUCT_UNAVAILABLE'
+  /** A product is priced in another currency than the rest of the bag. */
+  | 'CURRENCY_MISMATCH'
   /** A product is for sale, but not in the quantity asked for. */
   | 'INSUFFICIENT_STOCK'
   /** The bag is worth more than an order can record. */

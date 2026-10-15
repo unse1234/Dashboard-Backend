@@ -1,15 +1,16 @@
 import { Prisma, type Currency } from '../../generated/prisma/client';
 
 /**
- * The one currency the storefront sells in. A product priced in anything else
- * is not shown: its number is never relabelled or converted.
+ * The currency of an empty bag, which has no product to take one from. A
+ * product's price is never relabelled or converted: it is shown, quoted and
+ * charged in the currency it is stored in.
  */
-export const STOREFRONT_CURRENCY: Currency = 'PKR';
+export const DEFAULT_BAG_CURRENCY: Currency = 'PKR';
 
 /**
  * Which products the public catalogue shows (the query aliases `Product` as
- * `p`): on sale, not archived, and priced in the storefront's currency with a
- * real price. Sold-out products are included; they are listed as not in stock.
+ * `p`): on sale, not archived, and with a real price, in whichever currency it
+ * is priced. Sold-out products are included; they are listed as not in stock.
  *
  * Everything public reads through this one condition, so the list, the details
  * and the readiness report can never disagree about what is visible.
@@ -17,7 +18,6 @@ export const STOREFRONT_CURRENCY: Currency = 'PKR';
 export const eligibleProduct = Prisma.sql`(
   p."archivedAt" IS NULL
   AND p."status" = 'ACTIVE'
-  AND p."currency" = ${STOREFRONT_CURRENCY}::"Currency"
   AND p."price" > 0
 )`;
 

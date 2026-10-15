@@ -3,7 +3,6 @@ import { BusinessException } from '../../common/business-error';
 import { toAmount } from '../../common/money';
 import { formatPublicId, parsePublicId } from '../../common/public-id';
 import type { Currency } from '../../generated/prisma/client';
-import { STOREFRONT_CURRENCY } from '../../products/storefront/storefront-catalog';
 import { exceedsMaxOrderAmount, priceOrder } from '../order-pricing';
 import { applyBagAction, BagRuleError } from './bag-engine';
 import { canonicalBag } from './bag-input';
@@ -51,6 +50,8 @@ export interface CheckoutQuoteResponse {
 const ISSUE_MESSAGES: Record<LineIssue, string> = {
   PRODUCT_UNAVAILABLE: 'This product is no longer available',
   INSUFFICIENT_STOCK: 'There is not enough stock for this quantity',
+  CURRENCY_MISMATCH:
+    'This product is priced in a different currency from the rest of your bag. A bag holds one currency.',
 };
 
 /** The bag and checkout quotes: priced from the products as they are now. */
@@ -86,6 +87,7 @@ export class StorefrontQuoteService {
         const issue = await this.pricing.issueFor(
           applied.raised.number,
           applied.raised.quantity,
+          applied.lines.map((line) => line.number),
         );
         if (issue) {
           throw new BusinessException(
@@ -131,9 +133,10 @@ export class StorefrontQuoteService {
 
     const blocked = bag.lines.filter((line) => line.issue !== null);
     if (blocked.length > 0) {
-      const code = blocked.some((line) => line.issue === 'PRODUCT_UNAVAILABLE')
-        ? 'PRODUCT_UNAVAILABLE'
-        : 'INSUFFICIENT_STOCK';
+      const code =
+        (['PRODUCT_UNAVAILABLE', 'CURRENCY_MISMATCH'] as const).find((issue) =>
+          blocked.some((line) => line.issue === issue),
+        ) ?? 'INSUFFICIENT_STOCK';
       throw new BusinessException(
         HttpStatus.CONFLICT,
         code,
@@ -162,10 +165,16 @@ export class StorefrontQuoteService {
     }
 
     const { token, expiresAt } = this.tokens.issue(
-      buildQuoteClaims(quoted, price, DEMO_CHARGES, shippingAddress),
+      buildQuoteClaims(
+        bag.currency,
+        quoted,
+        price,
+        DEMO_CHARGES,
+        shippingAddress,
+      ),
     );
     return {
-      currency: STOREFRONT_CURRENCY,
+      currency: bag.currency,
       paymentMethod: 'COD',
       items: bag.lines.map(toLineResponse),
       subtotal: toAmount(price.subtotal),

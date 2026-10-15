@@ -274,7 +274,6 @@ describe('Storefront bag and checkout quotes (e2e)', () => {
         const fine = await listed({ name: 'Fine', stock: 5 });
         const soldOut = await listed({ name: 'Sold out', stock: 0 });
         const off = await listed({ name: 'Off', status: 'INACTIVE' });
-        const dollars = await createProduct(ctx.prisma, { price: '10.00' });
 
         const sold = await bag({
           items: [],
@@ -286,16 +285,14 @@ describe('Storefront bag and checkout quotes (e2e)', () => {
           productId: prd(soldOut),
         });
 
-        for (const product of [off, dollars]) {
-          const res = await bag({
-            items: [],
-            action: { type: 'add', productId: prd(product) },
-          }).expect(409);
-          expect(res.body).toMatchObject({
-            code: 'PRODUCT_UNAVAILABLE',
-            productId: prd(product),
-          });
-        }
+        const switchedOff = await bag({
+          items: [],
+          action: { type: 'add', productId: prd(off) },
+        }).expect(409);
+        expect(switchedOff.body).toMatchObject({
+          code: 'PRODUCT_UNAVAILABLE',
+          productId: prd(off),
+        });
         await bag({
           items: [],
           action: { type: 'add', productId: 'PRD-999999' },
@@ -361,13 +358,13 @@ describe('Storefront bag and checkout quotes (e2e)', () => {
         expect(item.lineTotal).toBe(4500);
       });
 
-      it('treats archived, unknown and non-PKR products alike', async () => {
+      it('treats archived, unpriced and unknown products alike', async () => {
         const archived = await listed({ archived: true });
-        const dollars = await createProduct(ctx.prisma, { price: '10.00' });
+        const free = await listed({ price: '0.00' });
         const res = await bag({
           items: [
             line(archived, 1),
-            line(dollars, 1),
+            line(free, 1),
             { productId: 'PRD-999999', quantity: 1 },
           ],
         }).expect(200);
@@ -376,6 +373,63 @@ describe('Storefront bag and checkout quotes (e2e)', () => {
           'PRODUCT_UNAVAILABLE',
           'PRODUCT_UNAVAILABLE',
         ]);
+      });
+    });
+
+    describe('currencies', () => {
+      const inDollars = (options: ProductOptions = {}) =>
+        listed({ currency: 'USD', price: '10.00', ...options });
+
+      it('prices a USD bag in dollars', async () => {
+        const a = await inDollars({ name: 'A' });
+        const b = await inDollars({ name: 'B', price: '2.50' });
+        const res = await bag({
+          items: [line(a, 2), line(b, 1)],
+        }).expect(200);
+        const body = res.body as BagBody;
+        expect(body.currency).toBe('USD');
+        expect(body.subtotal).toBe(22.5);
+        expect(body.hasIssues).toBe(false);
+      });
+
+      it('refuses to add a product in another currency than the bag', async () => {
+        const rupees = await listed({ name: 'Rupees' });
+        const dollars = await inDollars({ name: 'Dollars' });
+
+        const res = await bag({
+          items: [line(rupees, 1)],
+          action: { type: 'add', productId: prd(dollars) },
+        }).expect(409);
+        expect(res.body).toMatchObject({
+          code: 'CURRENCY_MISMATCH',
+          productId: prd(dollars),
+        });
+
+        // An empty bag takes either, and the first product sets the currency.
+        const first = await bag({
+          items: [],
+          action: { type: 'add', productId: prd(dollars) },
+        }).expect(200);
+        expect((first.body as BagBody).currency).toBe('USD');
+      });
+
+      it('flags, and does not price, a line in another currency than the first', async () => {
+        const rupees = await listed({ name: 'Rupees' });
+        const dollars = await inDollars({ name: 'Dollars' });
+
+        const res = await bag({
+          items: [line(rupees, 1), line(dollars, 1)],
+        }).expect(200);
+        const body = res.body as BagBody;
+        expect(body.currency).toBe('PKR');
+        expect(body.subtotal).toBe(1500);
+        expect(body.hasIssues).toBe(true);
+        expect(body.items[1]).toMatchObject({
+          issue: 'CURRENCY_MISMATCH',
+          unitPrice: null,
+          lineTotal: null,
+        });
+        expect(body.items[1].product).toMatchObject({ currency: 'USD' });
       });
     });
 
@@ -640,6 +694,31 @@ describe('Storefront bag and checkout quotes (e2e)', () => {
       });
       expect(JSON.stringify(short.body)).not.toMatch(/"stock"|available/);
       expect(short.body.quoteToken).toBeUndefined();
+    });
+
+    it('quotes a USD bag in dollars, and refuses a bag that mixes currencies', async () => {
+      const dollars = await listed({ currency: 'USD', price: '10.00' });
+      const rupees = await listed({ name: 'Rupees' });
+
+      const quoted = await checkout({
+        items: [line(dollars, 3)],
+        shippingAddress: ADDRESS,
+      }).expect(200);
+      expect(quoted.body).toMatchObject({
+        currency: 'USD',
+        subtotal: 30,
+        total: 30,
+      });
+
+      const mixed = await checkout({
+        items: [line(dollars, 1), line(rupees, 1)],
+        shippingAddress: ADDRESS,
+      }).expect(409);
+      expect(mixed.body).toMatchObject({
+        code: 'CURRENCY_MISMATCH',
+        issues: [{ productId: prd(rupees), issue: 'CURRENCY_MISMATCH' }],
+      });
+      expect(mixed.body.quoteToken).toBeUndefined();
     });
 
     it('answers INVALID_BAG for a repeated product and ORDER_TOO_LARGE for a huge bag', async () => {

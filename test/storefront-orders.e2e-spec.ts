@@ -198,6 +198,20 @@ describe('Storefront order placement (e2e)', () => {
       expect(await stockOf(mug)).toBe(2);
     });
 
+    it('places an order for a USD product in dollars', async () => {
+      const gadget = await listed({ currency: 'USD', price: '10.00' });
+      const items = [line(gadget, 2)];
+      const body = await orderFor(items);
+      const res = await place(randomUUID(), body).expect(201);
+      expect(res.body).toMatchObject({
+        currency: 'USD',
+        paymentMethod: 'COD',
+        subtotal: 20,
+        total: 20,
+      });
+      expect(await stockOf(gadget)).toBe(8);
+    });
+
     it('records the order as COD, PKR and pending, with snapshots and no actor', async () => {
       const kettle = await listed();
       const items = [line(kettle, 2)];
@@ -511,7 +525,7 @@ describe('Storefront order placement (e2e)', () => {
       await nothingWasWritten();
     });
 
-    it('refuses a product that stopped being priced in PKR', async () => {
+    it('refuses a product whose currency changed after the quote', async () => {
       const kettle = await listed();
       const body = await orderFor([line(kettle, 1)]);
       await ctx.prisma.product.update({
@@ -566,6 +580,7 @@ describe('Storefront order placement (e2e)', () => {
     it('refuses an expired quote', async () => {
       const kettle = await listed();
       const claims = buildQuoteClaims(
+        'PKR',
         [
           {
             number: kettle.number,
@@ -730,6 +745,7 @@ describe('Storefront order placement (e2e)', () => {
       // A renewed quote is a different request, even for the same bag. (Tokens
       // are issued to the second, so this one is issued a minute on to differ.)
       const claims = buildQuoteClaims(
+        'PKR',
         [
           {
             number: kettle.number,
@@ -864,8 +880,13 @@ describe('Storefront order placement (e2e)', () => {
     it('does not sell a product the storefront does not show, even with a valid quote for it', async () => {
       // Quotes refuse such a product, so sign one by hand: the order itself
       // must still hold the line.
-      const dollars = await createProduct(ctx.prisma, { price: '10.00' });
+      const dollars = await createProduct(ctx.prisma, {
+        currency: 'PKR',
+        price: '10.00',
+        status: 'INACTIVE',
+      });
       const claims = buildQuoteClaims(
+        'PKR',
         [
           {
             number: dollars.number,

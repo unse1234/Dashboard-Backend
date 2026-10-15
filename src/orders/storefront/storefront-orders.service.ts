@@ -5,7 +5,6 @@ import { formatPublicId } from '../../common/public-id';
 import { resolveGuestCustomer } from '../../customers/guest-customer';
 import type { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { STOREFRONT_CURRENCY } from '../../products/storefront/storefront-catalog';
 import {
   PlacementError,
   placeOrder,
@@ -168,7 +167,8 @@ export class StorefrontOrdersService {
           adjustments: DEMO_CHARGES,
           paymentStatus: 'PENDING',
           paymentMethod: 'COD',
-          requiredCurrency: STOREFRONT_CURRENCY,
+          // The currency the guest was quoted in, not whatever it is now.
+          requiredCurrency: claims.currency,
           shippingAddress: snapshot,
           // The delivery address is the billing address in V1.
           billingAddress: snapshot,
@@ -180,7 +180,7 @@ export class StorefrontOrdersService {
             // is what the stock statement read.
             for (const line of priced.lines) {
               if (
-                line.currency !== STOREFRONT_CURRENCY ||
+                line.currency !== claims.currency ||
                 !line.unitPrice.greaterThan(0)
               ) {
                 throw unavailable(line.number);

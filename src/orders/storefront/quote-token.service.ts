@@ -3,13 +3,14 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { safeEqual } from '../../common/crypto.util';
 import type { Env } from '../../config/env.validation';
+import type { Currency } from '../../generated/prisma/client';
 
 /**
  * What a checkout quote promises, and what the order must still match when it
  * is placed. Amounts are exact decimal strings, never numbers.
  */
 export interface QuoteClaims {
-  currency: 'PKR';
+  currency: Currency;
   /** [product number, quantity], ordered by product number. */
   items: [number, number][];
   /** The unit price of each item, in the same order, as exact decimals. */
@@ -143,7 +144,7 @@ function isEnvelope(value: unknown): value is Envelope {
   return (
     e.v === 1 &&
     typeof e.exp === 'number' &&
-    e.currency === 'PKR' &&
+    (e.currency === 'PKR' || e.currency === 'USD') &&
     Array.isArray(e.items) &&
     e.items.every(
       (item) =>

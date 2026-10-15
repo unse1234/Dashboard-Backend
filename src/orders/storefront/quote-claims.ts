@@ -1,4 +1,4 @@
-import { Prisma } from '../../generated/prisma/client';
+import { Prisma, type Currency } from '../../generated/prisma/client';
 import type { PriceAdjustments } from '../order-pricing';
 import { DELIVERY_COUNTRY } from './dto/storefront-address.dto';
 import type { QuoteClaims } from './quote-token.service';
@@ -31,6 +31,7 @@ export interface QuotedLine {
  * a charge could depend on, and the amounts.
  */
 export function buildQuoteClaims(
+  currency: Currency,
   lines: readonly QuotedLine[],
   amounts: { subtotal: Prisma.Decimal; total: Prisma.Decimal },
   charges: PriceAdjustments,
@@ -38,7 +39,7 @@ export function buildQuoteClaims(
 ): QuoteClaims {
   const sorted = [...lines].sort((a, b) => a.number - b.number);
   return {
-    currency: 'PKR',
+    currency,
     items: sorted.map(({ number, quantity }) => [number, quantity]),
     unitPrices: sorted.map(({ unitPrice }) => unitPrice.toFixed(2)),
     destination: {

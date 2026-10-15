@@ -10,7 +10,6 @@ import type {
 } from './dto/storefront-list-products-query.dto';
 import {
   eligibleProduct,
-  STOREFRONT_CURRENCY,
   storefrontProductColumns,
   type StorefrontProductRow,
 } from './storefront-catalog';
@@ -33,15 +32,9 @@ export interface StorefrontProductPage {
 export const READINESS_LIST_LIMIT = 100;
 
 export interface CatalogReadinessDto {
-  /** The currency the storefront sells in. */
-  currency: Currency;
   /** Products a visitor can see. */
   eligible: number;
-  /**
-   * Active, unarchived products the storefront is hiding because they are not
-   * priced in `currency` (or have no price), so they are never shown under a
-   * label they were not priced in.
-   */
+  /** Active, unarchived products the storefront is hiding because they have no price. */
   excludedCount: number;
   /** The first `READINESS_LIST_LIMIT` of them, by id. */
   excluded: {
@@ -135,7 +128,7 @@ export class StorefrontProductsService {
 
   /**
    * For staff: which active products the storefront is not showing because
-   * their pricing has not been prepared for it.
+   * they have no price.
    */
   async readiness(): Promise<CatalogReadinessDto> {
     const [counts, excluded] = await this.prisma.$transaction([
@@ -156,7 +149,6 @@ export class StorefrontProductsService {
         LIMIT ${READINESS_LIST_LIMIT}`,
     ]);
     return {
-      currency: STOREFRONT_CURRENCY,
       eligible: counts[0].eligible,
       excludedCount: counts[0].excluded,
       excluded: excluded.map((row) => ({

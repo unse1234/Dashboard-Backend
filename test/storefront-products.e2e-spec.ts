@@ -134,12 +134,11 @@ describe('Storefront catalogue (e2e)', () => {
   });
 
   describe('what is visible', () => {
-    it('shows active, unarchived products priced in PKR, sold out ones included', async () => {
+    it('shows active, unarchived, priced products, sold out ones included', async () => {
       const inStock = await listed({ name: 'In stock', stock: 5 });
       const soldOut = await listed({ name: 'Sold out', stock: 0 });
       await listed({ name: 'Switched off', status: 'INACTIVE' });
       await listed({ name: 'Archived', archived: true });
-      await createProduct(ctx.prisma, { name: 'In dollars', price: '10.00' });
       await listed({ name: 'No price', price: '0.00' });
 
       const res = await visit('/storefront/products?sort=name').expect(200);
@@ -152,10 +151,23 @@ describe('Storefront catalogue (e2e)', () => {
       expect((res.body as Page).meta.total).toBe(2);
     });
 
-    it('never shows a USD product under a PKR label', async () => {
-      await createProduct(ctx.prisma, { name: 'In dollars', price: '10.00' });
-      const res = await visit('/storefront/products').expect(200);
-      expect((res.body as Page).data).toEqual([]);
+    it('shows a USD product in its own currency, next to PKR ones', async () => {
+      const rupees = await listed({ name: 'In rupees' });
+      const dollars = await createProduct(ctx.prisma, {
+        name: 'In dollars',
+        currency: 'USD',
+        price: '10.00',
+      });
+      const res = await visit('/storefront/products?sort=name').expect(200);
+      const byId = Object.fromEntries(
+        (res.body as Page).data.map((p) => [p.id, p]),
+      );
+      expect(Object.keys(byId).sort()).toEqual(
+        [prd(rupees), prd(dollars)].sort(),
+      );
+      expect(byId[prd(dollars)]).toMatchObject({ price: 10, currency: 'USD' });
+      expect(byId[prd(rupees)]).toMatchObject({ price: 1500, currency: 'PKR' });
+      await visit(`/storefront/products/${prd(dollars)}`).expect(200);
     });
   });
 
@@ -472,7 +484,6 @@ describe('Storefront catalogue (e2e)', () => {
     it('answers the same 404 whatever the reason the product is not shown', async () => {
       const inactive = await listed({ status: 'INACTIVE' });
       const archived = await listed({ archived: true });
-      const dollars = await createProduct(ctx.prisma, { price: '10.00' });
       const free = await listed({ price: '0.00' });
 
       const bodies = [];
@@ -484,7 +495,6 @@ describe('Storefront catalogue (e2e)', () => {
         '1001',
         prd(inactive),
         prd(archived),
-        prd(dollars),
         prd(free),
       ]) {
         const res = await visit(
@@ -508,8 +518,9 @@ describe('Storefront catalogue (e2e)', () => {
     it('names the active products the storefront is hiding, and counts the rest', async () => {
       await listed({ name: 'Shown 1' });
       await listed({ name: 'Shown 2', stock: 0 });
-      const dollars = await createProduct(ctx.prisma, {
-        name: 'Still in dollars',
+      await createProduct(ctx.prisma, {
+        name: 'In dollars',
+        currency: 'USD',
         price: '10.00',
       });
       const free = await listed({ name: 'Unpriced', price: '0.00' });
@@ -521,16 +532,9 @@ describe('Storefront catalogue (e2e)', () => {
         .set(bearer(staffToken))
         .expect(200);
       expect(res.body).toEqual({
-        currency: 'PKR',
-        eligible: 2,
-        excludedCount: 2,
+        eligible: 3,
+        excludedCount: 1,
         excluded: [
-          {
-            id: prd(dollars),
-            name: 'Still in dollars',
-            currency: 'USD',
-            price: 10,
-          },
           { id: prd(free), name: 'Unpriced', currency: 'PKR', price: 0 },
         ],
       });
