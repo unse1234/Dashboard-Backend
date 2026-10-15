@@ -77,11 +77,11 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | PATCH | `/orders/:orderId/status` | ADMIN, STAFF | `{ status }`. Moves along the lifecycle below; `409` with the reason otherwise. Asking for the status it already has is a no-op `200`. Cancelling returns the stock |
 | PATCH | `/orders/:orderId/payment-status` | ADMIN, STAFF | `{ paymentStatus: "PAID" }` records that the payment arrived (for a cash-on-delivery order, that the cash was collected, before or after it ships); repeating it is harmless; `409` for a cancelled order |
 | GET | `/storefront/products` | public | `?page=1&pageSize=20&search&categoryId&sort` (`page` ≤ 10000, `pageSize` ≤ 100; `search` matches name, subtitle or brand, case-insensitive, `%` and `_` literal; `sort` is `newest` (default), `price_asc`, `price_desc` or `name`, each with a stable tie-break) → `{ data, meta: { page, pageSize, total, totalPages } }`. Any other parameter is `400` |
-| GET | `/storefront/products/:productId` | public | One visible product. Unknown, malformed, switched-off, archived and not-priced-in-PKR ids are the same `404` |
+| GET | `/storefront/products/:productId` | public | One visible product. Unknown, malformed, switched-off, archived and unpriced ids are the same `404` |
 | POST | `/storefront/bag/quote` | public | `{ items: [{ productId, quantity }], action?: { type, productId, quantity? } }` → `200 { currency, items, subtotal, lineCount, unitCount, hasIssues }`. `type` is `add`, `increment`, `decrement`, `set` or `remove`. The server merges, counts and prices; nothing is stored or reserved. See the section below |
 | POST | `/storefront/checkout/quote` | public | `{ items, shippingAddress: { recipientName, addressLine1, addressLine2?, city, region, postalCode?, country, phone? } }` → `200 { currency, paymentMethod: "COD", items, subtotal, shipping, tax, discount, total, quoteToken, expiresAt }`. `409` (with `issues`) when a line cannot be bought; `400 UNSUPPORTED_DESTINATION` outside Pakistan |
-| POST | `/storefront/orders` | public | Places a cash-on-delivery order. Needs an `Idempotency-Key` header. `{ contact: { name, email, phone }, items: [{ productId, quantity }], shippingAddress, quoteToken }` → `201` with the receipt `{ id, createdAt, status, paymentStatus, paymentMethod, currency, items, subtotal, shipping, tax, discount, total }`. `409` with a `code`: `QUOTE_CHANGED` (with `reason`), `PRODUCT_UNAVAILABLE`, `INSUFFICIENT_STOCK`, `IDEMPOTENCY_CONFLICT`. See the section below |
-| GET | `/storefront/catalog-readiness` | ADMIN, STAFF | `{ currency, eligible, excludedCount, excluded: [{ id, name, currency, price }] }`: the active products the storefront hides because they are not priced in PKR (first 100) |
+| POST | `/storefront/orders` | public | Places a cash-on-delivery order. Needs an `Idempotency-Key` header. `{ contact: { name, email, phone }, items: [{ productId, quantity }], shippingAddress, quoteToken }` → `201` with the receipt `{ id, createdAt, status, paymentStatus, paymentMethod, currency, items, subtotal, shipping, tax, discount, total }`. `409` with a `code`: `QUOTE_CHANGED` (with `reason`), `PRODUCT_UNAVAILABLE`, `INSUFFICIENT_STOCK`, `CURRENCY_MISMATCH`, `IDEMPOTENCY_CONFLICT`. See the section below |
+| GET | `/storefront/catalog-readiness` | ADMIN, STAFF | `{ eligible, excludedCount, excluded: [{ id, name, currency, price }] }`: the active products the storefront hides because they have no price (first 100) |
 
 Unverified users can sign in and use the `/auth/*` account routes; everything else
 (`/users`, `/customers`, `/products`, `/categories`, `/orders`) requires a verified email. Passwords: 12–128 characters with a
@@ -107,11 +107,16 @@ lowercase letter, an uppercase letter and a number.
 `/storefront/products` needs no sign-in and is read-only. It is a separate controller with its own
 DTOs and projection; the dashboard's `/products` routes stay behind authentication.
 
-- **What is visible.** A product that is `ACTIVE`, not archived, priced in **PKR** and with a price
-  above zero. Sold-out products are listed, with `inStock: false`. A product priced in another
-  currency is never shown under a PKR label and never converted: reprice it (`PATCH /products/:id`
-  with `currency: "PKR"` and the new `price`) to publish it. `/storefront/catalog-readiness` lists
-  what is being held back.
+- **What is visible.** A product that is `ACTIVE`, not archived and with a price above zero, in
+  whichever currency (`PKR` or `USD`) it is priced. Sold-out products are listed, with
+  `inStock: false`. A price is never converted or relabelled: it is shown, quoted and charged in
+  the product's own currency. `/storefront/catalog-readiness` lists what is being held back.
+- **One currency per bag.** A bag, a quote and an order each have one currency: that of the bag's
+  first product. Adding a product in another currency is `409 CURRENCY_MISMATCH` (with the
+  `productId`); a bag that already mixes them comes back with that line's `issue` set to
+  `CURRENCY_MISMATCH`, unpriced and left out of the subtotal, and checkout is blocked until it is
+  removed. The quote token carries the currency, and an order is refused if a product's currency
+  changed after the quote.
 - **What is returned.** `id`, `name`, `subtitle`, `description`, `brand`, `category { id, name }`,
   `price`, `currency`, `image { url, alt }` (`null` without one), `gallery` and `inStock`. Never the
   internal id, SKU, cost price, version, exact stock or history. The client sends no visibility or
@@ -133,11 +138,11 @@ the shopper did (`action`) and renders what comes back.
   of a product that is not there change nothing, so a double click is harmless. A quantity is only
   accepted with `add` and `set`.
 - **Refused actions.** An action that would put something that cannot be bought into the bag is
-  `409` and changes nothing: `PRODUCT_UNAVAILABLE` (not for sale) or `INSUFFICIENT_STOCK` (not that
-  many), with the `productId`. Taking away is always allowed.
+  `409` and changes nothing: `PRODUCT_UNAVAILABLE` (not for sale), `INSUFFICIENT_STOCK` (not that
+  many) or `CURRENCY_MISMATCH` (another currency than the bag), with the `productId`. Taking away is always allowed.
 - **Lines that went bad.** A product that stops being buyable after it was added is not an error:
   its line comes back with `issue` set (`PRODUCT_UNAVAILABLE`, with `product: null` and no price,
-  or `INSUFFICIENT_STOCK`), `hasIssues` is `true`, and checkout is blocked until the shopper removes
+  `INSUFFICIENT_STOCK` or `CURRENCY_MISMATCH`), `hasIssues` is `true`, and checkout is blocked until the shopper removes
   or reduces it. The response never says how many are left.
 - **Invalid bags.** `400 INVALID_BAG`: a product repeated (in any letter case), a quantity outside
   1-1000 once merged, more than 100 products. `400 ORDER_TOO_LARGE`: worth more than
@@ -161,7 +166,7 @@ the shopper did (`action`) and renders what comes back.
 `POST /storefront/orders` needs no sign-in and no customer id. It is a separate controller with its
 own DTO and receipt; the dashboard's `POST /orders` (administrators, amounts and statuses in the
 body) is not exposed. The body has **no** field for a customer, an amount, a charge, a status, a
-currency or a card, and unknown fields are `400`: the server sets PKR, cash on delivery, `PENDING`
+currency or a card, and unknown fields are `400`: the server takes the currency from the products, sets cash on delivery, `PENDING`
 order and payment status and zero shipping, tax and discount, and prices every line itself.
 
 - **Contact.** `name`, `email` and `phone` are required, the phone a Pakistani number (kept as
