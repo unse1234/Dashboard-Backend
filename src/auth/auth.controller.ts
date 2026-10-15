@@ -86,9 +86,13 @@ export class AuthController {
       this.cookies.set(response, result.refreshToken);
       return result.body;
     } catch (error) {
-      // A lost race means a sibling request already set the new cookie; clearing
-      // it here would sign the user out.
-      if (!(error instanceof RefreshRaceException))
+      // Only an invalid credential should clear the cookie. A database outage
+      // says nothing about its validity; preserve it so the browser can retry.
+      // A sibling refresh may also have already set a fresh cookie after a race.
+      if (
+        error instanceof UnauthorizedException &&
+        !(error instanceof RefreshRaceException)
+      )
         this.cookies.clear(response);
       throw error;
     }

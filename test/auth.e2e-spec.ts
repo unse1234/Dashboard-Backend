@@ -1,5 +1,6 @@
 import { JwtService } from '@nestjs/jwt';
 import { createHmac } from 'node:crypto';
+import { Client } from 'pg';
 import request from 'supertest';
 import {
   bearer,
@@ -289,6 +290,74 @@ describe('Auth (e2e)', () => {
         .set('Cookie', rotated!)
         .expect(200);
       await http().get('/auth/me').set(bearer(first.accessToken)).expect(200);
+    });
+
+    it('uses one joined SQL read for refresh and each live-session check', async () => {
+      const first = await login(ctx.app, 'staff@example.com');
+      const user = await ctx.prisma.user.update({
+        where: { email: 'staff@example.com' },
+        data: { name: 'Updated Staff Name' },
+      });
+      // Count actual driver SELECTs, rather than ORM calls that can hide
+      // additional relation reads. Do not capture parameter values or tokens.
+      const querySpy = jest.spyOn(Client.prototype, 'query');
+      const selects = () =>
+        querySpy.mock.calls
+          .map(([query]) =>
+            typeof query === 'string'
+              ? query
+              : ((query as unknown as { text?: string }).text ?? ''),
+          )
+          .filter((sql) => /^\s*SELECT\b/i.test(sql));
+      try {
+        const refreshed = await http()
+          .post('/auth/refresh')
+          .set(csrfHeaders)
+          .set('Cookie', first.cookie)
+          .expect(200);
+
+        expect(selects()).toHaveLength(1);
+        expect(selects()[0]).toContain('JOIN "User" u');
+        expect(refreshed.body.user).toMatchObject({
+          id: user.id,
+          name: user.name,
+          emailVerifiedAt: user.emailVerifiedAt?.toISOString(),
+          createdAt: user.createdAt.toISOString(),
+          updatedAt: user.updatedAt.toISOString(),
+        });
+        expect(JSON.stringify(refreshed.body)).not.toMatch(
+          /passwordHash|refreshTokenHash|previousRefreshTokenHash/,
+        );
+        expect(refreshed.headers['server-timing']).toMatch(
+          /session_lookup;dur=[\d.]+/,
+        );
+        expect(refreshed.headers['server-timing']).toContain(
+          'session_rotate;dur=',
+        );
+        expect(refreshed.headers['server-timing']).toContain('jwt_sign;dur=');
+        expect(refreshed.headers['timing-allow-origin']).toBe(
+          csrfHeaders.Origin,
+        );
+        expect(refreshed.headers['access-control-expose-headers']).toBe(
+          'Server-Timing,X-Request-Id',
+        );
+
+        querySpy.mockClear();
+        const me = await http()
+          .get('/auth/me')
+          .set(bearer(first.accessToken))
+          .expect(200);
+        expect(selects()).toHaveLength(1);
+        expect(selects()[0]).toContain('JOIN "User" u');
+        expect(me.body).toEqual(refreshed.body.user);
+        expect(me.headers['server-timing']).toContain('db_count;desc="1"');
+        expect(me.headers['server-timing']).toContain('jwt_verify;dur=');
+        expect(me.headers['x-request-id']).not.toBe(
+          refreshed.headers['x-request-id'],
+        );
+      } finally {
+        querySpy.mockRestore();
+      }
     });
 
     it('requires an allowed origin and the CSRF header', async () => {

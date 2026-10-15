@@ -69,6 +69,28 @@ export class EnvironmentVariables {
   @IsNotEmpty()
   DATABASE_URL!: string;
 
+  /** Bounds both opening a database connection and waiting for a pool slot. */
+  @IsInt()
+  @Min(100)
+  @Max(60_000)
+  DB_CONNECTION_TIMEOUT_MS: number = 5_000;
+
+  /** Server-side statement deadline, including time waiting on database locks. */
+  @IsInt()
+  @Min(100)
+  @Max(120_000)
+  DB_QUERY_TIMEOUT_MS: number = 10_000;
+
+  /** Per-request duration headers and redacted slow-request summaries. */
+  @Transform(toBoolean)
+  @IsBoolean()
+  REQUEST_TIMING_ENABLED: boolean = true;
+
+  @IsInt()
+  @Min(0)
+  @Max(120_000)
+  SLOW_REQUEST_THRESHOLD_MS: number = 500;
+
   /** Comma-separated list of exact origins allowed for CORS and CSRF checks. */
   @IsString()
   @IsNotEmpty()

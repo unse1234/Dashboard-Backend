@@ -6,6 +6,7 @@ import type { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
 import { parseOrigins, type Env } from './config/env.validation';
 import { CSRF_HEADER } from './common/guards/csrf.guard';
+import { requestTimingMiddleware } from './common/observability/request-timing';
 
 /**
  * HTTP-level configuration shared by main.ts and the e2e tests, so tests run
@@ -13,6 +14,18 @@ import { CSRF_HEADER } from './common/guards/csrf.guard';
  */
 export function configureApp(app: NestExpressApplication): void {
   const config = app.get<ConfigService<Env, true>>(ConfigService);
+  const allowedOrigins = new Set(
+    parseOrigins(config.getOrThrow('CORS_ORIGINS', { infer: true })),
+  );
+  app.use(
+    requestTimingMiddleware({
+      enabled: config.getOrThrow('REQUEST_TIMING_ENABLED', { infer: true }),
+      slowRequestMs: config.getOrThrow('SLOW_REQUEST_THRESHOLD_MS', {
+        infer: true,
+      }),
+      allowedOrigins,
+    }),
+  );
 
   // Behind a reverse proxy, trust exactly N hops so req.ip (used for rate
   // limiting and session metadata) is the client address and cannot be spoofed.
@@ -35,14 +48,12 @@ export function configureApp(app: NestExpressApplication): void {
     }),
   );
 
-  const allowedOrigins = new Set(
-    parseOrigins(config.getOrThrow('CORS_ORIGINS', { infer: true })),
-  );
   app.enableCors({
     // Disallowed origins simply get no CORS headers; non-browser callers send no Origin.
     origin: (origin, callback) =>
       callback(null, !origin || allowedOrigins.has(origin)),
     credentials: true,
+    exposedHeaders: ['Server-Timing', 'X-Request-Id'],
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     // Idempotency-Key: the storefront's order placement (and a script's) sends it
     // from the browser, so the preflight has to allow it.

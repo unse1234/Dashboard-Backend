@@ -10,6 +10,7 @@ import { SessionsService } from '../../auth/sessions.service';
 import { TokenService } from '../../auth/token.service';
 import type { AuthenticatedRequest } from '../authenticated-user';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { measureOperation } from '../observability/request-timing';
 
 /**
  * Global guard: every route requires a valid access token unless marked @Public().
@@ -35,7 +36,9 @@ export class JwtAuthGuard implements CanActivate {
     const token = this.extractBearerToken(request);
     if (!token) throw new UnauthorizedException('Authentication required');
 
-    const payload = await this.tokens.verifyAccessToken(token);
+    const payload = await measureOperation('jwt_verify', () =>
+      this.tokens.verifyAccessToken(token),
+    );
     const session = await this.sessions.findActive(payload.sid);
     if (!session || session.userId !== payload.sub) {
       throw new UnauthorizedException('Invalid or expired token');

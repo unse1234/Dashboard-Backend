@@ -115,6 +115,34 @@ describe('Storefront bag and checkout quotes (e2e)', () => {
       });
     });
 
+    it('keeps SQL timings isolated for concurrent bag actions and empty bags', async () => {
+      const mug = await listed();
+      const [added, incremented, empty] = await Promise.all([
+        bag({
+          items: [],
+          action: { type: 'add', productId: prd(mug) },
+        }).expect(200),
+        bag({
+          items: [line(mug, 1)],
+          action: { type: 'increment', productId: prd(mug) },
+        }).expect(200),
+        bag({ items: [] }).expect(200),
+      ]);
+      // Count real Prisma query events, including the action's validation read.
+      for (const response of [added, incremented]) {
+        expect(response.headers['server-timing']).toContain(
+          'db_count;desc="1"',
+        );
+        expect(response.headers['server-timing']).toContain('db_acquire;dur=');
+      }
+      expect(empty.headers['server-timing']).toContain('db_count;desc="0"');
+      expect(
+        new Set(
+          [added, incremented, empty].map((r) => r.headers['x-request-id']),
+        ).size,
+      ).toBe(3);
+    });
+
     it('prices every line on the server, exactly, with counts', async () => {
       const kettle = await listed({ name: 'Kettle', price: '199.99' });
       const mug = await listed({ name: 'Mug', price: '0.10' });

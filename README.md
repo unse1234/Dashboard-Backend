@@ -22,6 +22,13 @@ Startup fails with a list of every missing or invalid variable (see `.env.exampl
 The API runs at `http://localhost:3001`; the dashboard (port 3000) is the only allowed
 browser origin by default (`CORS_ORIGINS`).
 
+Database waits are bounded: `DB_CONNECTION_TIMEOUT_MS` defaults to 5000 ms for
+connections and pool acquisition; `DB_QUERY_TIMEOUT_MS` defaults to 10000 ms for
+PostgreSQL statements, with a driver fallback one second later. Both can be
+overridden in the environment. Refresh failures caused by server or database
+errors preserve the refresh cookie so the client can retry; invalid credentials
+still clear it.
+
 ### Create the first administrator
 
 There is no public registration. The first admin is created once from the command line:
@@ -442,6 +449,29 @@ automatically before the suite and tables are cleared between tests. Jest runs w
 `@nestjs/jwt` are ESM-only.
 
 ## Performance
+
+Request diagnostics are enabled by default (`REQUEST_TIMING_ENABLED=true`). Every
+response includes an `X-Request-Id` and a `Server-Timing` header visible in the
+browser Network panel. `app` measures server time until response headers are sent;
+`db` sums successful Prisma query durations; `db_acquire` measures pool acquisition, including
+queueing and any new connection setup. Auth requests also report `session_lookup`,
+`session_rotate`, `jwt_sign` and/or `jwt_verify` as applicable. `db_count` counts
+successful query events, including transaction statements. Failed SQL attempts
+may emit no query event, so use the total/stage timings and error status when
+diagnosing failures. These metrics overlap and should
+not be added together; parallel queries can make their sum exceed elapsed time.
+
+Requests taking at least `SLOW_REQUEST_THRESHOLD_MS` (default `500`), server errors
+and aborted responses emit one `RequestTiming` JSON summary with the same request
+id, route template, final status, total response duration, database metrics and
+the maximum observed pool wait count. No SQL, query parameters, credentials or
+raw URLs are logged. Set the threshold to `0` temporarily to log every request, or
+disable instrumentation with `REQUEST_TIMING_ENABLED=false`.
+
+Refresh uses one joined session/user SELECT and an atomic rotation update, with
+no second user lookup. Protected requests use one joined live-session/user SELECT.
+Bag actions validate and price from one product SELECT; empty bags need none.
+These changes reduce database round trips but do not remove hosting cold starts.
 
 Measured on a local PostgreSQL 18 with 5,000 customers, 5,000 products, 50,000 orders and
 100,000 order lines, through the compiled server (milliseconds, 15 requests each):

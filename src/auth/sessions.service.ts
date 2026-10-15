@@ -6,9 +6,10 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.validation';
 import { generateToken, safeEqual, sha256 } from '../common/crypto.util';
-import type { SessionRevokeReason } from '../generated/prisma/client';
+import { measureOperation } from '../common/observability/request-timing';
+import { Prisma, type SessionRevokeReason } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
-import { publicUserSelect, type PublicUser } from '../users/public-user';
+import { toPublicUser, type PublicUser } from '../users/public-user';
 
 /**
  * A refresh request that presents the token this session just rotated away from
@@ -18,6 +19,27 @@ export const REFRESH_REUSE_GRACE_MS = 30_000;
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Keep user fields flat: PostgreSQL date columns then remain Date objects rather
+// than becoming strings inside a JSON projection. Never select passwordHash.
+const sessionUserColumns = Prisma.sql`
+  s."id" AS "sessionId", s."userId",
+  u."id", u."name", u."email", u."role", u."emailVerifiedAt",
+  u."isActive", u."lastLoginAt", u."createdAt", u."updatedAt"
+`;
+
+interface SessionUserRow extends PublicUser {
+  sessionId: string;
+  userId: string;
+}
+
+interface RotationRow extends SessionUserRow {
+  refreshTokenHash: string;
+  previousRefreshTokenHash: string | null;
+  rotatedAt: Date | null;
+  expiresAt: Date;
+  revokedAt: Date | null;
+}
 
 /**
  * A refresh attempt lost a benign race. Callers should reject it without
@@ -35,6 +57,10 @@ export interface IssuedSession {
   userId: string;
   /** "<sessionId>.<secret>"; only the secret's hash is stored. */
   refreshToken: string;
+}
+
+export interface RotatedSession extends IssuedSession {
+  user: PublicUser;
 }
 
 export interface SessionSummary {
@@ -89,20 +115,29 @@ export class SessionsService {
   async rotate(
     refreshToken: string,
     meta: SessionMeta,
-  ): Promise<IssuedSession> {
+  ): Promise<RotatedSession> {
     const parsed = this.parse(refreshToken);
     if (!parsed) throw this.invalidRefresh();
 
-    const session = await this.prisma.session.findUnique({
-      where: { id: parsed.sessionId },
-      include: { user: { select: { isActive: true } } },
-    });
+    // A relation include can issue separate session/user SELECTs. Join once and
+    // carry this public user through refresh instead of reading it again later.
+    const [session] = await measureOperation(
+      'session_lookup',
+      () => this.prisma.$queryRaw<RotationRow[]>`
+      SELECT ${sessionUserColumns},
+             s."refreshTokenHash", s."previousRefreshTokenHash",
+             s."rotatedAt", s."expiresAt", s."revokedAt"
+      FROM "Session" s
+      JOIN "User" u ON u."id" = s."userId"
+      WHERE s."id" = ${parsed.sessionId}
+    `,
+    );
     const now = new Date();
     if (
       !session ||
       session.revokedAt ||
       session.expiresAt <= now ||
-      !session.user.isActive
+      !session.isActive
     ) {
       throw this.invalidRefresh();
     }
@@ -113,27 +148,30 @@ export class SessionsService {
       const secret = generateToken();
       // The WHERE on the current hash makes the swap atomic: of two concurrent
       // requests with the same token, only one updates a row.
-      const { count } = await this.prisma.session.updateMany({
-        where: {
-          id: session.id,
-          refreshTokenHash: session.refreshTokenHash,
-          revokedAt: null,
-        },
-        data: {
-          refreshTokenHash: sha256(secret),
-          previousRefreshTokenHash: session.refreshTokenHash,
-          rotatedAt: now,
-          lastUsedAt: now,
-          expiresAt: new Date(now.getTime() + this.ttlMs),
-          ipAddress: meta.ipAddress,
-          userAgent: meta.userAgent,
-        },
-      });
+      const { count } = await measureOperation('session_rotate', () =>
+        this.prisma.session.updateMany({
+          where: {
+            id: session.sessionId,
+            refreshTokenHash: session.refreshTokenHash,
+            revokedAt: null,
+          },
+          data: {
+            refreshTokenHash: sha256(secret),
+            previousRefreshTokenHash: session.refreshTokenHash,
+            rotatedAt: now,
+            lastUsedAt: now,
+            expiresAt: new Date(now.getTime() + this.ttlMs),
+            ipAddress: meta.ipAddress,
+            userAgent: meta.userAgent,
+          },
+        }),
+      );
       if (count === 0) throw new RefreshRaceException('Invalid refresh token');
       return {
-        sessionId: session.id,
+        sessionId: session.sessionId,
         userId: session.userId,
-        refreshToken: `${session.id}.${secret}`,
+        refreshToken: `${session.sessionId}.${secret}`,
+        user: toPublicUser(session),
       };
     }
 
@@ -147,28 +185,34 @@ export class SessionsService {
     }
 
     // A stale token outside the grace window: assume it was stolen and kill the session.
-    await this.revoke(session.id, 'REUSE_DETECTED');
+    await this.revoke(session.sessionId, 'REUSE_DETECTED');
     throw this.invalidRefresh();
   }
 
   /** Looks up a live session together with its (active) user in one query. */
-  findActive(
+  async findActive(
     sessionId: string,
   ): Promise<{ id: string; userId: string; user: PublicUser } | null> {
-    if (!UUID_PATTERN.test(sessionId)) return Promise.resolve(null);
-    return this.prisma.session.findFirst({
-      where: {
-        id: sessionId,
-        revokedAt: null,
-        expiresAt: { gt: new Date() },
-        user: { isActive: true },
-      },
-      select: {
-        id: true,
-        userId: true,
-        user: { select: publicUserSelect },
-      },
-    });
+    if (!UUID_PATTERN.test(sessionId)) return null;
+    const [session] = await measureOperation(
+      'session_lookup',
+      () => this.prisma.$queryRaw<SessionUserRow[]>`
+      SELECT ${sessionUserColumns}
+      FROM "Session" s
+      JOIN "User" u ON u."id" = s."userId"
+      WHERE s."id" = ${sessionId}
+        AND s."revokedAt" IS NULL
+        AND s."expiresAt" > ${new Date()}
+        AND u."isActive" = TRUE
+    `,
+    );
+    return session
+      ? {
+          id: session.sessionId,
+          userId: session.userId,
+          user: toPublicUser(session),
+        }
+      : null;
   }
 
   async listForUser(

@@ -70,6 +70,7 @@ export class StorefrontQuoteService {
    */
   async quoteBag(dto: BagQuoteDto): Promise<BagQuoteResponse> {
     let lines = canonicalBag(dto.items);
+    let raisedNumber: number | undefined;
 
     if (dto.action) {
       const { type, productId, quantity } = dto.action;
@@ -83,25 +84,27 @@ export class StorefrontQuoteService {
         throw this.invalidBag(error);
       }
 
-      if (applied.raised) {
-        const issue = await this.pricing.issueFor(
-          applied.raised.number,
-          applied.raised.quantity,
-          applied.lines.map((line) => line.number),
-        );
-        if (issue) {
-          throw new BusinessException(
-            HttpStatus.CONFLICT,
-            issue,
-            ISSUE_MESSAGES[issue],
-            { productId: formatPublicId('PRD', applied.raised.number) },
-          );
-        }
-      }
+      raisedNumber = applied.raised?.number;
       lines = applied.lines;
     }
 
     const bag = await this.pricing.price(lines);
+    // Validate the changed line against the same catalogue read used to price
+    // the response. Only that line can refuse an action; existing issues stay
+    // visible so the shopper can remove or reduce those lines.
+    if (raisedNumber !== undefined) {
+      const issue = bag.lines.find(
+        (line) => line.number === raisedNumber,
+      )?.issue;
+      if (issue) {
+        throw new BusinessException(
+          HttpStatus.CONFLICT,
+          issue,
+          ISSUE_MESSAGES[issue],
+          { productId: formatPublicId('PRD', raisedNumber) },
+        );
+      }
+    }
     if (exceedsMaxOrderAmount(bag.subtotal)) throw this.tooLarge();
     return {
       currency: bag.currency,

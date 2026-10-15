@@ -148,27 +148,6 @@ export class StorefrontPricingService {
     };
   }
 
-  /**
-   * Whether `quantity` of one product can be bought right now, in the bag it
-   * would be part of (`bagNumbers`, in bag order, including `number`): null when
-   * it can. Used to refuse an action that would put something unbuyable in the
-   * bag.
-   */
-  async issueFor(
-    number: number,
-    quantity: number,
-    bagNumbers: readonly number[],
-    db: Db = this.prisma,
-  ): Promise<LineIssue | null> {
-    const rows = await this.load(db, [number, ...bagNumbers]);
-    const row = rows.get(number);
-    if (!row) return 'PRODUCT_UNAVAILABLE';
-    if (row.currency !== bagCurrency(bagNumbers, rows)) {
-      return 'CURRENCY_MISMATCH';
-    }
-    return quantity > row.stock ? 'INSUFFICIENT_STOCK' : null;
-  }
-
   private async load(
     db: Db,
     numbers: number[],

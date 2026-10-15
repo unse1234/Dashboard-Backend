@@ -29,8 +29,44 @@ describe('env validation', () => {
     );
   });
 
+  it('requires finite, positive database deadlines and converts overrides', () => {
+    const defaults = validate(valid);
+    expect(defaults.DB_CONNECTION_TIMEOUT_MS).toBe(5000);
+    expect(defaults.DB_QUERY_TIMEOUT_MS).toBe(10000);
+    const custom = validate({
+      ...valid,
+      DB_CONNECTION_TIMEOUT_MS: '3000',
+      DB_QUERY_TIMEOUT_MS: '15000',
+    });
+    expect(custom.DB_CONNECTION_TIMEOUT_MS).toBe(3000);
+    expect(custom.DB_QUERY_TIMEOUT_MS).toBe(15000);
+    for (const key of ['DB_CONNECTION_TIMEOUT_MS', 'DB_QUERY_TIMEOUT_MS']) {
+      for (const value of ['0', '-1', 'invalid', '120001']) {
+        expect(() => validate({ ...valid, [key]: value })).toThrow(key);
+      }
+    }
+  });
+
   it('reports every missing required variable in one error', () => {
     expect(() => validate({})).toThrow(/DATABASE_URL[\s\S]*JWT_ACCESS_SECRET/);
+  });
+
+  it('validates timing settings and supports disabling or logging all requests', () => {
+    expect(validate(valid).REQUEST_TIMING_ENABLED).toBe(true);
+    expect(validate(valid).SLOW_REQUEST_THRESHOLD_MS).toBe(500);
+    const configured = validate({
+      ...valid,
+      REQUEST_TIMING_ENABLED: 'false',
+      SLOW_REQUEST_THRESHOLD_MS: '0',
+    });
+    expect(configured.REQUEST_TIMING_ENABLED).toBe(false);
+    expect(configured.SLOW_REQUEST_THRESHOLD_MS).toBe(0);
+    expect(() =>
+      validate({ ...valid, SLOW_REQUEST_THRESHOLD_MS: '-1' }),
+    ).toThrow(/SLOW_REQUEST_THRESHOLD_MS/);
+    expect(() =>
+      validate({ ...valid, REQUEST_TIMING_ENABLED: 'invalid' }),
+    ).toThrow(/REQUEST_TIMING_ENABLED/);
   });
 
   it('rejects short JWT secrets', () => {

@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { AuthenticatedUser } from '../common/authenticated-user';
+import { measureOperation } from '../common/observability/request-timing';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   publicUserSelect,
@@ -68,11 +69,7 @@ export class AuthService {
 
   async refresh(refreshToken: string, meta: SessionMeta): Promise<AuthResult> {
     const session = await this.sessions.rotate(refreshToken, meta);
-    const user = await this.prisma.user.findUniqueOrThrow({
-      where: { id: session.userId },
-      select: publicUserSelect,
-    });
-    return this.issue(user, session);
+    return this.issue(session.user, session);
   }
 
   async logout(refreshToken: string | undefined): Promise<void> {
@@ -119,9 +116,8 @@ export class AuthService {
     user: PublicUser,
     session: { sessionId: string; refreshToken: string },
   ): Promise<AuthResult> {
-    const { accessToken, expiresIn } = await this.tokens.signAccessToken(
-      user.id,
-      session.sessionId,
+    const { accessToken, expiresIn } = await measureOperation('jwt_sign', () =>
+      this.tokens.signAccessToken(user.id, session.sessionId),
     );
     return {
       body: { accessToken, tokenType: 'Bearer', expiresIn, user },
