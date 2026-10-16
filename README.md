@@ -119,7 +119,7 @@ lowercase letter, an uppercase letter and a number.
 DTOs and projection; the dashboard's `/products` routes stay behind authentication.
 
 - **What is visible.** A product that is `ACTIVE`, not archived and positively
-  priced in PKR. Legacy USD products are excluded until explicitly repriced. Sold-out products are listed, with
+  priced in PKR. Apply the product-currency correction migration so existing rupee prices have PKR labels. Sold-out products are listed, with
   `inStock: false`. A price is never converted or relabelled: it is shown, quoted and charged in
   the product's own currency. `/storefront/catalog-readiness` lists what is being held back.
 - **PKR-only new sales.** Every new bag, quote and order uses PKR. Adding a legacy USD
@@ -284,9 +284,10 @@ migration; there is no category management yet.
 - **History.** Each change is recorded in the same transaction as the change, with who made it
   (`null`, shown as "System", for automatic changes), and phrased for the History tab.
 - **Currency.** New products and imports use PKR; API currency input, when supplied,
-  must be PKR. Existing USD records remain unchanged and readable in the dashboard.
-  Moving a legacy product to PKR requires explicitly supplied price and, when a cost
-  exists, costPrice values. No exchange rate or automatic relabelling is applied.
+  must be PKR. Migration `20261016110000_product_currency_pkr` corrects all existing
+  product labels from USD to PKR, keeping entered rupee prices and costs unchanged.
+  It increments versions and records price-history entries atomically. Historical
+  orders and their snapshots are unchanged.
   See [currency policy and migration instructions](CURRENCY.md).
 - **Storefront fields.** `subtitle` (up to 160 characters), `imageUrl` and `galleryUrls`
   (cover plus gallery: at most 8 images for new products/additions). Legacy products

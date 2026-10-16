@@ -50,7 +50,7 @@ export class CreateProductDto {
   @Amount()
   price!: number;
 
-  /** Defaults to PKR; other currencies are retained only on legacy records. */
+  /** Product prices use PKR. Historical orders retain their recorded currency. */
   @Omittable()
   @Equals(SHOP_CURRENCY, { message: 'currency must be PKR' })
   currency?: typeof SHOP_CURRENCY;

@@ -1,4 +1,6 @@
 import request from 'supertest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   bearer,
   createCustomer,
@@ -33,6 +35,124 @@ describe('PKR currency policy (e2e)', () => {
       role: 'ADMIN',
     });
     token = (await login(ctx.app, 'currency-admin@example.com')).accessToken;
+  });
+
+  it('corrects all saved product currency labels without changing amounts, order snapshots or already-PKR products', async () => {
+    const products = [
+      await createProduct(ctx.prisma, {
+        currency: 'USD',
+        price: 3500.25,
+        costPrice: 2400.5,
+      }),
+      await createProduct(ctx.prisma, {
+        currency: 'USD',
+        status: 'INACTIVE',
+        price: 0,
+      }),
+      await createProduct(ctx.prisma, {
+        currency: 'USD',
+        archived: true,
+        price: 1800,
+      }),
+    ];
+    const existingPkr = await createProduct(ctx.prisma, {
+      currency: 'PKR',
+      price: 1500,
+    });
+    const order = await createOrder(
+      ctx.prisma,
+      await createCustomer(ctx.prisma),
+      {
+        currency: 'USD',
+        items: [{ product: products[0], quantity: 2 }],
+      },
+    );
+    const orderBefore = await ctx.prisma.order.findUniqueOrThrow({
+      where: { id: order.id },
+      include: { items: true, events: true },
+    });
+    const sql = readFileSync(
+      resolve(
+        __dirname,
+        '../prisma/migrations/20261016110000_product_currency_pkr/migration.sql',
+      ),
+      'utf8',
+    );
+    await ctx.prisma.$executeRawUnsafe(sql);
+    for (const before of products) {
+      const after = await ctx.prisma.product.findUniqueOrThrow({
+        where: { id: before.id },
+      });
+      expect(after).toEqual({
+        ...before,
+        currency: 'PKR',
+        version: before.version + 1,
+        updatedAt: expect.any(Date),
+      });
+      const events = await ctx.prisma.productEvent.findMany({
+        where: { productId: before.id },
+      });
+      expect(events).toHaveLength(before.costPrice === null ? 1 : 2);
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'PRICE_CHANGED',
+            actorId: null,
+            data: {
+              field: 'price',
+              from: Number(before.price),
+              to: Number(before.price),
+              fromCurrency: 'USD',
+              currency: 'PKR',
+            },
+          }),
+        ]),
+      );
+      if (before.costPrice !== null) {
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              data: {
+                field: 'costPrice',
+                from: Number(before.costPrice),
+                to: Number(before.costPrice),
+                fromCurrency: 'USD',
+                currency: 'PKR',
+              },
+            }),
+          ]),
+        );
+      }
+    }
+    expect(
+      await ctx.prisma.product.findUniqueOrThrow({
+        where: { id: existingPkr.id },
+      }),
+    ).toEqual(existingPkr);
+    expect(
+      await ctx.prisma.order.findUniqueOrThrow({
+        where: { id: order.id },
+        include: { items: true, events: true },
+      }),
+    ).toEqual(orderBefore);
+    await http()
+      .get(`/storefront/products/PRD-${products[0].number}`)
+      .expect(200);
+    await http()
+      .get(`/storefront/products/PRD-${products[1].number}`)
+      .expect(404);
+    await http()
+      .get(`/storefront/products/PRD-${products[2].number}`)
+      .expect(404);
+    const afterFirstRun = await ctx.prisma.product.findMany({
+      orderBy: { number: 'asc' },
+    });
+    const eventCount = await ctx.prisma.productEvent.count();
+    await ctx.prisma.$executeRawUnsafe(sql);
+    expect(
+      await ctx.prisma.product.findMany({ orderBy: { number: 'asc' } }),
+    ).toEqual(afterFirstRun);
+    expect(await ctx.prisma.productEvent.count()).toBe(eventCount);
   });
 
   it('defaults API writes to PKR and refuses a client-selected USD currency', async () => {
