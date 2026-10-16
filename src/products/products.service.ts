@@ -10,6 +10,17 @@ import { toDecimal } from '../common/money';
 import { numberFromSearch } from '../common/public-id';
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
+import { UploadsService } from '../uploads/uploads.service';
+import { MAX_PRODUCT_IMAGES } from '../uploads/image-validation';
+import {
+  IMAGE_LIMIT_MESSAGE,
+  imageId,
+  imageReferences,
+  lockProductImages,
+  normalizeImageChanges,
+  toImageDtos,
+  type ProductImageDto,
+} from './product-images';
 import type { CreateProductDto } from './dto/create-product.dto';
 import { createProductInTransaction } from './product-create';
 import type {
@@ -43,6 +54,11 @@ export interface ProductPage {
     total: number;
     totalPages: number;
   };
+}
+
+export interface ProductImagesResult {
+  data: ProductImageDto[];
+  product: ProductDto;
 }
 
 /** Which products a status filter means; the same derivation the screens use. */
@@ -81,7 +97,14 @@ const isUniqueViolation = (error: unknown) =>
 
 @Injectable()
 export class ProductsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly uploads: UploadsService,
+  ) {}
+
+  private toDto(row: ProductRow): ProductDto {
+    return toProductDto(row, (reference) => this.uploads.publicUrl(reference));
+  }
 
   async list(query: ListProductsQueryDto): Promise<ProductPage> {
     const where: Prisma.ProductWhereInput = {
@@ -103,7 +126,7 @@ export class ProductsService {
       }),
     ]);
     return {
-      data: rows.map(toProductDto),
+      data: rows.map((row) => this.toDto(row)),
       meta: {
         page: query.page,
         pageSize: query.pageSize,
@@ -114,7 +137,7 @@ export class ProductsService {
   }
 
   async get(number: number): Promise<ProductDto> {
-    return toProductDto(await this.findActive(this.prisma, number));
+    return this.toDto(await this.findActive(this.prisma, number));
   }
 
   /** The product's latest changes, newest first. */
@@ -137,9 +160,10 @@ export class ProductsService {
     actor: AuthenticatedUser,
     dto: CreateProductDto,
   ): Promise<ProductDto> {
+    normalizeImageChanges(dto, null, this.uploads);
     try {
       return await this.prisma.$transaction(async (tx) => {
-        return toProductDto(await createProductInTransaction(tx, actor, dto));
+        return this.toDto(await createProductInTransaction(tx, actor, dto));
       });
     } catch (error) {
       if (isUniqueViolation(error)) {
@@ -162,8 +186,11 @@ export class ProductsService {
   ): Promise<ProductDto> {
     if (!hasAnyField(dto)) throw new BadRequestException('No changes supplied');
 
+    let removed: string[] = [];
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      const result = await this.prisma.$transaction(async (tx) => {
+        if (dto.imageUrl !== undefined || dto.galleryUrls !== undefined)
+          await lockProductImages(tx);
         const current = await this.findActive(tx, number);
         if (current.version !== dto.version) {
           throw new ConflictException(STALE_VERSION_MESSAGE);
@@ -180,10 +207,12 @@ export class ProductsService {
           );
         }
 
+        normalizeImageChanges(dto, current, this.uploads);
+
         const changes = changedFields(current, dto);
         // The form sends every field every time, so "nothing differs" is normal:
         // acknowledge it without bumping the version or writing history.
-        if (Object.keys(changes).length === 0) return toProductDto(current);
+        if (Object.keys(changes).length === 0) return this.toDto(current);
 
         if (dto.categoryId !== undefined && 'categoryId' in changes) {
           await this.assertCategoryExists(tx, dto.categoryId);
@@ -210,14 +239,130 @@ export class ProductsService {
             diffProduct(current, updated),
           ),
         });
-        return toProductDto(updated);
+        removed = imageReferences(current).filter(
+          (ref) => !imageReferences(updated).includes(ref),
+        );
+        return this.toDto(updated);
       });
+      await this.uploads.cleanupUnreferenced(removed);
+      return result;
     } catch (error) {
       if (isUniqueViolation(error)) {
         throw new ConflictException(SKU_TAKEN_MESSAGE);
       }
       throw error;
     }
+  }
+
+  async images(number: number): Promise<{ data: ProductImageDto[] }> {
+    return {
+      data: toImageDtos(
+        await this.findActive(this.prisma, number),
+        this.uploads,
+      ),
+    };
+  }
+
+  async uploadImages(
+    actor: AuthenticatedUser,
+    number: number,
+    files: Express.Multer.File[],
+    replaceImageId?: string,
+  ): Promise<ProductImagesResult> {
+    this.uploads.validateBatch(files);
+    if (replaceImageId && files.length !== 1)
+      throw new BadRequestException(
+        'Replacing an image requires exactly one file',
+      );
+    let saved: string[] = [];
+    let removed: string[] = [];
+    try {
+      const result = await this.prisma.$transaction(
+        async (tx) => {
+          await lockProductImages(tx);
+          const current = await this.findActive(tx, number);
+          const existing = imageReferences(current);
+          const replacePosition = replaceImageId
+            ? existing.findIndex((ref) => imageId(ref) === replaceImageId)
+            : -1;
+          if (replaceImageId && replacePosition === -1)
+            throw new NotFoundException('Image not found');
+          if (
+            existing.length + files.length - (replaceImageId ? 1 : 0) >
+            MAX_PRODUCT_IMAGES
+          )
+            throw new BadRequestException(IMAGE_LIMIT_MESSAGE);
+          saved = await this.uploads.saveBatch(files);
+          const next = [...existing];
+          if (replacePosition >= 0)
+            removed = next.splice(replacePosition, 1, ...saved);
+          else next.push(...saved);
+          const updated = await this.writeImages(tx, actor, current, next);
+          return this.imageResult(updated);
+        },
+        { timeout: 30_000 },
+      );
+      await this.uploads.cleanupUnreferenced(removed);
+      return result;
+    } catch (error) {
+      // Rollback precedes cleanup; reference checks also protect ambiguous commits.
+      await this.uploads.cleanupUnreferenced(saved);
+      throw error;
+    }
+  }
+
+  async deleteImage(
+    actor: AuthenticatedUser,
+    number: number,
+    id: string,
+  ): Promise<ProductImagesResult> {
+    let removed: string[] = [];
+    const result = await this.prisma.$transaction(async (tx) => {
+      await lockProductImages(tx);
+      const current = await this.findActive(tx, number);
+      const existing = imageReferences(current);
+      removed = existing.filter((ref) => imageId(ref) === id);
+      if (!removed.length) throw new NotFoundException('Image not found');
+      const updated = await this.writeImages(
+        tx,
+        actor,
+        current,
+        existing.filter((ref) => imageId(ref) !== id),
+      );
+      return this.imageResult(updated);
+    });
+    // External refs are ignored and shared/archived references retain their file.
+    await this.uploads.cleanupUnreferenced(removed);
+    return result;
+  }
+
+  private imageResult(row: ProductRow): ProductImagesResult {
+    return { data: toImageDtos(row, this.uploads), product: this.toDto(row) };
+  }
+
+  private async writeImages(
+    db: Db,
+    actor: AuthenticatedUser,
+    current: ProductRow,
+    references: string[],
+  ): Promise<ProductRow> {
+    const { count } = await db.product.updateMany({
+      where: { id: current.id, version: current.version, archivedAt: null },
+      data: {
+        imageUrl: references[0] ?? null,
+        galleryUrls: references.slice(1),
+        version: { increment: 1 },
+      },
+    });
+    if (!count) throw new ConflictException(STALE_VERSION_MESSAGE);
+    const updated = await db.product.findUniqueOrThrow({
+      where: { id: current.id },
+      select: productSelect,
+    });
+    await db.productEvent.createMany({
+      data: toEventRows(current.id, actor.id, diffProduct(current, updated)),
+    });
+    return updated;
   }
 
   /**

@@ -95,7 +95,10 @@ export function marginOf(
   return price.minus(costPrice).div(price).toDecimalPlaces(4).toNumber();
 }
 
-export function toProductDto(row: ProductRow): ProductDto {
+export function toProductDto(
+  row: ProductRow,
+  resolveImage: (reference: string) => string = (reference) => reference,
+): ProductDto {
   return {
     id: formatPublicId('PRD', row.number),
     name: row.name,
@@ -105,8 +108,8 @@ export function toProductDto(row: ProductRow): ProductDto {
     categoryId: row.categoryId,
     category: row.category.name,
     brand: row.brand,
-    imageUrl: row.imageUrl,
-    galleryUrls: row.galleryUrls,
+    imageUrl: row.imageUrl === null ? null : resolveImage(row.imageUrl),
+    galleryUrls: row.galleryUrls.map((reference) => resolveImage(reference)),
     status: row.status,
     price: toAmount(row.price),
     currency: row.currency,

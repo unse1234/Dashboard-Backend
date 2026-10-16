@@ -75,6 +75,10 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | GET | `/products` | ADMIN, STAFF | `?page=1&pageSize=20&search&categoryId&status` (`pageSize` ≤ 100; `search` matches name or SKU, case-insensitive, or a product id such as `PRD-1001` or `1001`; `categoryId` is a category uuid; `status` is `ACTIVE`, `INACTIVE` or `OUT_OF_STOCK`; newest first) → `{ data, meta: { page, pageSize, total, totalPages } }`. Archived products are never listed |
 | GET | `/products/:productId` | ADMIN, STAFF | One product; `404` if unknown or archived, `400` if `:productId` is not like `PRD-1001` |
 | GET | `/products/:productId/history` | ADMIN, STAFF | `{ data: [{ id, change, occurredAt, actor }] }`, newest first, at most 50; `actor` is `null` for automatic changes |
+| GET | `/products/:productId/images` | ADMIN, STAFF | Ordered image metadata `{ data: [{ id, url, isCover, position }] }` |
+| POST | `/products/:productId/images` | ADMIN, STAFF | Multipart `images`, 1–8 files, JPEG/PNG/WebP, 5 MiB each, 8 images total; `201 { data, product }`. Optional `?replaceImageId=<id>` replaces one slot with one file |
+| DELETE | `/products/:productId/images/:imageId` | ADMIN, STAFF | `200 { data, product }`; deleting the cover promotes the next image; image must belong to this product |
+| GET, HEAD | `/uploads/products/:uuid.:ext` | public | Validated image bytes only; uploaded files use UUID names and jpg/png/webp extensions |
 | POST | `/products` | ADMIN, STAFF | `{ name, sku, categoryId, price, currency?, subtitle?, brand?, description?, imageUrl?, galleryUrls?, status?, costPrice?, stock? }` → `201`; currency defaults to PKR and only PKR is accepted; `409` if the SKU is taken, `400` for an unknown category |
 | PATCH | `/products/:productId` | ADMIN, STAFF | `{ version, ...fields }`; `version` is the one the editor loaded. Only fields that differ are written. `409` when the product changed since that version, or the SKU is taken. `subtitle`, `brand`, `description`, `imageUrl` and `costPrice` can be cleared with `null`, `galleryUrls` with `[]` |
 | POST | `/products/archive` | ADMIN | `{ productIds: ["PRD-1001", ...] }` (1–100) → `200 { archived }`, the number archived by this call; unknown or already archived ids are skipped, so repeating it is harmless |
@@ -284,9 +288,13 @@ migration; there is no category management yet.
   Moving a legacy product to PKR requires explicitly supplied price and, when a cost
   exists, costPrice values. No exchange rate or automatic relabelling is applied.
   See [currency policy and migration instructions](CURRENCY.md).
-- **Storefront fields.** `subtitle` (up to 160 characters), `imageUrl` and `galleryUrls` (up to
-  10, in display order, no repeats). An image is an `http(s)` URL or a path starting with `/`;
-  `javascript:`, `data:` and `//host` references are refused.
+- **Storefront fields.** `subtitle` (up to 160 characters), `imageUrl` and `galleryUrls`
+  (cover plus gallery: at most 8 images for new products/additions). Legacy products
+  above this limit retain their images and remain editable without increasing the count.
+  External `http(s)` URLs and storefront paths starting with `/` still work;
+  `javascript:`, `data:` and `//host` references are refused. Filesystem uploads are
+  stored as relative keys and returned as absolute API URLs. See the
+  [product image API, frontend handoff and deployment guide](PRODUCT_IMAGES.md).
 - **Database guarantees.** Stock is never negative, prices are never negative, and SKUs are
   unique ignoring case.
 

@@ -33,6 +33,7 @@ export interface StorefrontProductDto {
 // reaches a public response by accident.
 export function toStorefrontProduct(
   row: StorefrontProductRow,
+  resolveImage: (reference: string) => string = (reference) => reference,
 ): StorefrontProductDto {
   return {
     id: formatPublicId('PRD', row.number),
@@ -43,10 +44,12 @@ export function toStorefrontProduct(
     category: { id: row.categoryId, name: row.categoryName },
     price: toAmount(row.price),
     currency: row.currency,
-    image: row.imageUrl ? { url: row.imageUrl, alt: row.name } : null,
+    image: row.imageUrl
+      ? { url: resolveImage(row.imageUrl), alt: row.name }
+      : null,
     // The primary image is view 1; the gallery continues from 2.
     gallery: row.galleryUrls.map((url, index) => ({
-      url,
+      url: resolveImage(url),
       alt: `${row.name}, view ${index + 2}`,
     })),
     inStock: row.inStock,

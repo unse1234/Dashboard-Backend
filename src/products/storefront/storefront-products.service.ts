@@ -4,6 +4,7 @@ import { toAmount } from '../../common/money';
 import { formatPublicId } from '../../common/public-id';
 import { Prisma, type Currency } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { UploadsService } from '../../uploads/uploads.service';
 import type {
   StorefrontListProductsQueryDto,
   StorefrontSort,
@@ -76,7 +77,10 @@ function listFilter(query: StorefrontListProductsQueryDto): Prisma.Sql {
 
 @Injectable()
 export class StorefrontProductsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly uploads: UploadsService,
+  ) {}
 
   async list(
     query: StorefrontListProductsQueryDto,
@@ -99,7 +103,11 @@ export class StorefrontProductsService {
     ]);
     const total = counted[0].total;
     return {
-      data: rows.map(toStorefrontProduct),
+      data: rows.map((row) =>
+        toStorefrontProduct(row, (reference) =>
+          this.uploads.publicUrl(reference),
+        ),
+      ),
       meta: {
         page: query.page,
         pageSize: query.pageSize,
@@ -123,7 +131,9 @@ export class StorefrontProductsService {
       WHERE p."number" = ${number} AND ${eligibleProduct}
       LIMIT 1`;
     if (!row) throw new NotFoundException('Product not found');
-    return toStorefrontProduct(row);
+    return toStorefrontProduct(row, (reference) =>
+      this.uploads.publicUrl(reference),
+    );
   }
 
   /**
