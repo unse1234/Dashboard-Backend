@@ -10,6 +10,9 @@ coverage/
 
 /src/generated/prisma
 
+# Product images; use a persistent disk in production.
+/uploads/
+
 # Local AI tool configuration
 .agents/
 .claude/

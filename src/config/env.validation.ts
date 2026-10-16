@@ -65,6 +65,21 @@ export class EnvironmentVariables {
   @Max(65535)
   PORT: number = 3001;
 
+  /** Storage outside src/dist; resolved against the backend working directory. */
+  @IsString()
+  @IsNotEmpty()
+  UPLOAD_DIR: string = './uploads';
+
+  /** Public API origin; never inferred from the incoming Host header. */
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsUrl({
+    require_tld: false,
+    require_protocol: true,
+    protocols: ['http', 'https'],
+  })
+  PUBLIC_API_URL?: string;
+
   @IsString()
   @IsNotEmpty()
   DATABASE_URL!: string;
@@ -231,6 +246,21 @@ export function parseOrigins(raw: string): string[] {
 function checkCrossFieldRules(config: EnvironmentVariables): string[] {
   const problems: string[] = [];
 
+  if (config.PUBLIC_API_URL) {
+    const url = new URL(config.PUBLIC_API_URL);
+    if (
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      url.pathname !== '/'
+    ) {
+      problems.push(
+        'PUBLIC_API_URL must be an http(s) origin without credentials, path, query or fragment',
+      );
+    }
+  }
+
   const entries = config.CORS_ORIGINS.split(',')
     .map((entry) => entry.trim())
     .filter(Boolean);
@@ -258,6 +288,9 @@ function checkCrossFieldRules(config: EnvironmentVariables): string[] {
   }
 
   if (config.NODE_ENV === NodeEnv.Production) {
+    if (!config.PUBLIC_API_URL?.startsWith('https://')) {
+      problems.push('PUBLIC_API_URL must use https in production');
+    }
     if (!config.COOKIE_SECURE) {
       problems.push('COOKIE_SECURE must be true in production');
     }

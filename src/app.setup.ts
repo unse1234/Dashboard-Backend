@@ -7,6 +7,8 @@ import helmet from 'helmet';
 import { parseOrigins, type Env } from './config/env.validation';
 import { CSRF_HEADER } from './common/guards/csrf.guard';
 import { requestTimingMiddleware } from './common/observability/request-timing';
+import { UploadsService } from './uploads/uploads.service';
+import { isLocalImageKey } from './uploads/image-validation';
 
 /**
  * HTTP-level configuration shared by main.ts and the e2e tests, so tests run
@@ -65,4 +67,56 @@ export function configureApp(app: NestExpressApplication): void {
     ],
     maxAge: 600,
   });
+
+  // Public reads expose only generated image keys, never an index, dotfile or
+  // arbitrary file placed in the storage root. Mutations still use global guards.
+  const uploads = app.get(UploadsService);
+  app.use('/uploads', (req: Request, res: Response, next: NextFunction) => {
+    if (
+      !['GET', 'HEAD'].includes(req.method) ||
+      !isLocalImageKey(req.path.slice(1))
+    ) {
+      res.status(404).json({
+        statusCode: 404,
+        message: 'Image not found',
+        error: 'Not Found',
+      });
+      return;
+    }
+    next();
+  });
+  app.useStaticAssets(uploads.rootDirectory, {
+    prefix: '/uploads/',
+    index: false,
+    redirect: false,
+    dotfiles: 'deny',
+    fallthrough: false,
+    setHeaders: (res: Response) => {
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      // UUID files never change. Keep URLs usable from dashboard/storefront origins.
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    },
+  });
+  app.use(
+    '/uploads',
+    (error: unknown, _req: Request, res: Response, next: NextFunction) => {
+      if (res.headersSent) {
+        next(error);
+        return;
+      }
+      const status =
+        error &&
+        typeof error === 'object' &&
+        'statusCode' in error &&
+        error.statusCode === 404
+          ? 404
+          : 500;
+      res.status(status).json({
+        statusCode: status,
+        message: status === 404 ? 'Image not found' : 'Internal server error',
+        error: status === 404 ? 'Not Found' : 'Internal Server Error',
+      });
+    },
+  );
 }

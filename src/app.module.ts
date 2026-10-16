@@ -15,11 +15,13 @@ import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
 import { UsersModule } from './users/users.module';
 import { ImportsModule } from './imports/imports.module';
+import { UploadsModule } from './uploads/uploads.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, validate }),
     PrismaModule,
+    UploadsModule,
     // In-memory counters: limits are per process. Use a shared store if you
     // run more than one instance.
     ThrottlerModule.forRootAsync({

@@ -14,6 +14,7 @@ describe('env validation', () => {
     expect(env.COOKIE_SECURE).toBe(false);
     expect(env.JWT_ACCESS_TTL_SECONDS).toBe(900);
     expect(env.COOKIE_SAMESITE).toBe('strict');
+    expect(env.UPLOAD_DIR).toBe('./uploads');
   });
 
   it('gives a checkout quote 30 minutes unless told otherwise, within limits', () => {
@@ -118,6 +119,7 @@ describe('env validation', () => {
     const env = validate({
       ...valid,
       NODE_ENV: 'production',
+      PUBLIC_API_URL: 'https://api.example.com',
       FRONTEND_URL: 'https://admin.example.com',
       CORS_ORIGINS: 'https://admin.example.com',
       COOKIE_SECURE: 'true',
@@ -126,6 +128,28 @@ describe('env validation', () => {
       SMTP_PORT: '587',
     });
     expect(env.SMTP_PORT).toBe(587);
+  });
+
+  it('validates upload storage and its public origin', () => {
+    expect(
+      validate({
+        ...valid,
+        UPLOAD_DIR: '/var/data/uploads',
+        PUBLIC_API_URL: 'https://api.example.com/',
+      }).UPLOAD_DIR,
+    ).toBe('/var/data/uploads');
+    for (const value of [
+      'ftp://example.com',
+      'https://user:password@example.com',
+      'https://api.example.com/path',
+      'https://api.example.com?x=1',
+      'https://api.example.com#x',
+    ]) {
+      expect(() => validate({ ...valid, PUBLIC_API_URL: value })).toThrow(
+        'PUBLIC_API_URL',
+      );
+    }
+    expect(() => validate({ ...valid, UPLOAD_DIR: '' })).toThrow('UPLOAD_DIR');
   });
 });
 
