@@ -111,6 +111,40 @@ describe('toStorefrontProduct', () => {
     ).toMatchObject({ image: null, gallery: [] });
   });
 
+  it('resolves local images while preserving cover, gallery order and alt text', () => {
+    const resolveImage = (reference: string) =>
+      reference.startsWith('products/')
+        ? `https://api.example.com/uploads/${reference}`
+        : reference;
+    const stored = {
+      ...row,
+      imageUrl: 'products/cover.jpg',
+      galleryUrls: ['https://cdn.example.com/side.png', 'products/back.webp'],
+    };
+
+    expect(toStorefrontProduct(stored, resolveImage)).toMatchObject({
+      image: {
+        url: 'https://api.example.com/uploads/products/cover.jpg',
+        alt: 'Wireless Headphones',
+      },
+      gallery: [
+        {
+          url: 'https://cdn.example.com/side.png',
+          alt: 'Wireless Headphones, view 2',
+        },
+        {
+          url: 'https://api.example.com/uploads/products/back.webp',
+          alt: 'Wireless Headphones, view 3',
+        },
+      ],
+    });
+    expect(stored.imageUrl).toBe('products/cover.jpg');
+    expect(stored.galleryUrls).toEqual([
+      'https://cdn.example.com/side.png',
+      'products/back.webp',
+    ]);
+  });
+
   it('does not carry columns the projection does not name', () => {
     const projected = toStorefrontProduct({
       ...row,

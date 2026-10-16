@@ -249,7 +249,7 @@ describe('Products (e2e)', () => {
         brand: 'Hearthstone',
         status: 'ACTIVE',
         price: 12.5,
-        currency: 'USD',
+        currency: 'PKR',
         subtitle: null,
         imageUrl: null,
         galleryUrls: [],
@@ -526,10 +526,10 @@ describe('Products (e2e)', () => {
       });
     });
 
-    it('prices in USD, with no subtitle or images, unless told otherwise', async () => {
+    it('prices in PKR, with no subtitle or images, unless told otherwise', async () => {
       const res = await post('/products', await validBody()).expect(201);
       expect(res.body).toMatchObject({
-        currency: 'USD',
+        currency: 'PKR',
         subtitle: null,
         imageUrl: null,
         galleryUrls: [],
@@ -698,8 +698,8 @@ describe('Products (e2e)', () => {
       expect(entries.map((e) => e.change).sort()).toEqual(
         [
           'Details updated: name',
-          'Price changed from $10.00 to $12.00',
-          'Cost price changed from $2.00 to Not set',
+          'Price changed from PKR 10.00 to PKR 12.00',
+          'Cost price changed from PKR 2.00 to Not set',
           'Status changed from Active to Inactive',
           'Stock updated from 5 to 1,240',
         ].sort(),
@@ -710,7 +710,10 @@ describe('Products (e2e)', () => {
     });
 
     it('changes the currency, subtitle and images, and records them', async () => {
-      const product = await createProduct(ctx.prisma, { price: '10.00' });
+      const product = await createProduct(ctx.prisma, {
+        price: '10.00',
+        currency: 'USD',
+      });
       const res = await patch(`/products/${prd(product)}`, {
         version: 1,
         currency: 'PKR',
@@ -738,10 +741,14 @@ describe('Products (e2e)', () => {
     });
 
     it('records a currency change at the same number as a price change', async () => {
-      const product = await createProduct(ctx.prisma, { price: '10.00' });
+      const product = await createProduct(ctx.prisma, {
+        price: '10.00',
+        currency: 'USD',
+      });
       await patch(`/products/${prd(product)}`, {
         version: 1,
         currency: 'PKR',
+        price: 10,
       }).expect(200);
       const entries = (await history(prd(product))).data;
       expect(entries.map((e) => e.change)).toEqual([

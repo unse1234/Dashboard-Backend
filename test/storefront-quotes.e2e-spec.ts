@@ -408,16 +408,22 @@ describe('Storefront bag and checkout quotes (e2e)', () => {
       const inDollars = (options: ProductOptions = {}) =>
         listed({ currency: 'USD', price: '10.00', ...options });
 
-      it('prices a USD bag in dollars', async () => {
+      it('keeps a legacy USD bag in PKR with all USD lines unavailable', async () => {
         const a = await inDollars({ name: 'A' });
         const b = await inDollars({ name: 'B', price: '2.50' });
         const res = await bag({
           items: [line(a, 2), line(b, 1)],
         }).expect(200);
         const body = res.body as BagBody;
-        expect(body.currency).toBe('USD');
-        expect(body.subtotal).toBe(22.5);
-        expect(body.hasIssues).toBe(false);
+        expect(body.currency).toBe('PKR');
+        expect(body.subtotal).toBe(0);
+        expect(body.hasIssues).toBe(true);
+        expect(
+          body.items.every(
+            (item) =>
+              item.issue === 'PRODUCT_UNAVAILABLE' && item.product === null,
+          ),
+        ).toBe(true);
       });
 
       it('refuses to add a product in another currency than the bag', async () => {
@@ -429,16 +435,16 @@ describe('Storefront bag and checkout quotes (e2e)', () => {
           action: { type: 'add', productId: prd(dollars) },
         }).expect(409);
         expect(res.body).toMatchObject({
-          code: 'CURRENCY_MISMATCH',
+          code: 'PRODUCT_UNAVAILABLE',
           productId: prd(dollars),
         });
 
-        // An empty bag takes either, and the first product sets the currency.
+        // A legacy USD product is also refused as the first item.
         const first = await bag({
           items: [],
           action: { type: 'add', productId: prd(dollars) },
-        }).expect(200);
-        expect((first.body as BagBody).currency).toBe('USD');
+        }).expect(409);
+        expect(first.body.code).toBe('PRODUCT_UNAVAILABLE');
       });
 
       it('flags, and does not price, a line in another currency than the first', async () => {
@@ -453,11 +459,11 @@ describe('Storefront bag and checkout quotes (e2e)', () => {
         expect(body.subtotal).toBe(1500);
         expect(body.hasIssues).toBe(true);
         expect(body.items[1]).toMatchObject({
-          issue: 'CURRENCY_MISMATCH',
+          issue: 'PRODUCT_UNAVAILABLE',
           unitPrice: null,
           lineTotal: null,
         });
-        expect(body.items[1].product).toMatchObject({ currency: 'USD' });
+        expect(body.items[1].product).toBeNull();
       });
     });
 
@@ -724,18 +730,17 @@ describe('Storefront bag and checkout quotes (e2e)', () => {
       expect(short.body.quoteToken).toBeUndefined();
     });
 
-    it('quotes a USD bag in dollars, and refuses a bag that mixes currencies', async () => {
+    it('never issues a new checkout quote for legacy USD products', async () => {
       const dollars = await listed({ currency: 'USD', price: '10.00' });
       const rupees = await listed({ name: 'Rupees' });
 
       const quoted = await checkout({
         items: [line(dollars, 3)],
         shippingAddress: ADDRESS,
-      }).expect(200);
+      }).expect(409);
       expect(quoted.body).toMatchObject({
-        currency: 'USD',
-        subtotal: 30,
-        total: 30,
+        code: 'PRODUCT_UNAVAILABLE',
+        issues: [{ productId: prd(dollars), issue: 'PRODUCT_UNAVAILABLE' }],
       });
 
       const mixed = await checkout({
@@ -743,8 +748,8 @@ describe('Storefront bag and checkout quotes (e2e)', () => {
         shippingAddress: ADDRESS,
       }).expect(409);
       expect(mixed.body).toMatchObject({
-        code: 'CURRENCY_MISMATCH',
-        issues: [{ productId: prd(rupees), issue: 'CURRENCY_MISMATCH' }],
+        code: 'PRODUCT_UNAVAILABLE',
+        issues: [{ productId: prd(dollars), issue: 'PRODUCT_UNAVAILABLE' }],
       });
       expect(mixed.body.quoteToken).toBeUndefined();
     });

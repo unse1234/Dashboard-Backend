@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import type { AuthenticatedUser } from '../common/authenticated-user';
 import { toDecimal } from '../common/money';
+import { SHOP_CURRENCY } from '../common/currency';
 import type { Prisma } from '../generated/prisma/client';
 import type { Db } from '../prisma/prisma.service';
 import type { CreateProductDto } from './dto/create-product.dto';
@@ -10,6 +11,9 @@ import { productSelect } from './product.mapper';
 export function productCreateData(
   dto: CreateProductDto,
 ): Prisma.ProductCreateManyInput {
+  if (dto.currency !== undefined && dto.currency !== SHOP_CURRENCY) {
+    throw new BadRequestException('currency must be PKR');
+  }
   return {
     name: dto.name,
     sku: dto.sku,
@@ -21,7 +25,7 @@ export function productCreateData(
     categoryId: dto.categoryId,
     status: dto.status ?? 'ACTIVE',
     price: toDecimal(dto.price),
-    currency: dto.currency ?? 'USD',
+    currency: SHOP_CURRENCY,
     costPrice: dto.costPrice == null ? null : toDecimal(dto.costPrice),
     stock: dto.stock ?? 0,
   };

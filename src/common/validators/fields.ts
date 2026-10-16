@@ -34,7 +34,7 @@ export const OptionalText = (maxLength: number) =>
     MaxLength(maxLength),
   );
 
-/** Dollars and cents: not negative, at most two decimals, up to `max`. */
+/** Amounts: not negative, at most two decimals, up to `max`. */
 export const MoneyAmount = (max: number) =>
   applyDecorators(
     IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 2 }),

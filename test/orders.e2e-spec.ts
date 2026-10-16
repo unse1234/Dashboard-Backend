@@ -229,7 +229,7 @@ describe('Orders (e2e)', () => {
         status: 'SHIPPED',
         paymentStatus: 'PAID',
         paymentMethod: null,
-        currency: 'USD',
+        currency: 'PKR',
         itemCount: 1,
         total: 82.5,
         createdAt: order.createdAt.toISOString(),

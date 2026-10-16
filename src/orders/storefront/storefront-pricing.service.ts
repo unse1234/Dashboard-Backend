@@ -3,6 +3,7 @@ import { formatPublicId } from '../../common/public-id';
 import { toAmount } from '../../common/money';
 import { Prisma, type Currency } from '../../generated/prisma/client';
 import { PrismaService, type Db } from '../../prisma/prisma.service';
+import { UploadsService } from '../../uploads/uploads.service';
 import {
   DEFAULT_BAG_CURRENCY,
   eligibleProduct,
@@ -16,10 +17,7 @@ import {
 import { priceOrder } from '../order-pricing';
 import type { BagLine } from './bag-engine';
 
-/**
- * Why a line cannot be bought as it stands. `CURRENCY_MISMATCH`: it is priced
- * in a different currency from the bag's first product, and an order has one.
- */
+/** Why a line cannot be bought. CURRENCY_MISMATCH is retained for API compatibility. */
 export type LineIssue =
   'PRODUCT_UNAVAILABLE' | 'INSUFFICIENT_STOCK' | 'CURRENCY_MISMATCH';
 
@@ -48,28 +46,16 @@ export interface PricedBag {
 }
 
 /**
- * The currency of a bag: that of its first product that is for sale, in bag
- * order, or the default for a bag with none.
- */
-function bagCurrency(
-  numbers: readonly number[],
-  rows: ReadonlyMap<number, StorefrontStockedProductRow>,
-): Currency {
-  for (const number of numbers) {
-    const row = rows.get(number);
-    if (row) return row.currency;
-  }
-  return DEFAULT_BAG_CURRENCY;
-}
-
-/**
  * Prices a bag from the products as they are now, and says which lines cannot
  * be bought. Read-only: it reserves nothing, so what it returns is information,
  * and placing an order prices and takes stock again, atomically.
  */
 @Injectable()
 export class StorefrontPricingService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly uploads: UploadsService,
+  ) {}
 
   async price(
     lines: readonly BagLine[],
@@ -80,15 +66,12 @@ export class StorefrontPricingService {
       lines.map((line) => line.number),
     );
 
-    const currency = bagCurrency(
-      lines.map((line) => line.number),
-      rows,
-    );
+    const currency = DEFAULT_BAG_CURRENCY;
 
     const priced: PricedLine[] = lines.map(({ number, quantity }) => {
       const productId = formatPublicId('PRD', number);
       const row = rows.get(number);
-      if (!row) {
+      if (!row || row.currency !== currency) {
         return {
           productId,
           number,
@@ -99,23 +82,13 @@ export class StorefrontPricingService {
           issue: 'PRODUCT_UNAVAILABLE',
         };
       }
-      if (row.currency !== currency) {
-        // Shown, but not priced into this bag: it would need its own order.
-        return {
-          productId,
-          number,
-          quantity,
-          product: toStorefrontProduct(row),
-          unitPrice: null,
-          lineTotal: null,
-          issue: 'CURRENCY_MISMATCH',
-        };
-      }
       return {
         productId,
         number,
         quantity,
-        product: toStorefrontProduct(row),
+        product: toStorefrontProduct(row, (reference) =>
+          this.uploads.publicUrl(reference),
+        ),
         unitPrice: new Prisma.Decimal(row.price),
         lineTotal: null, // filled in below, with exact decimals
         issue: quantity > row.stock ? 'INSUFFICIENT_STOCK' : null,

@@ -251,7 +251,7 @@ export interface LineProduct {
 }
 
 export interface OrderOptions {
-  /** The order total in USD (default 100). The subtotal is derived from it. */
+  /** The order total (default 100). The subtotal is derived from it. */
   total?: number;
   shipping?: number;
   discount?: number;
@@ -261,7 +261,7 @@ export interface OrderOptions {
   paymentStatus?: PaymentStatus;
   /** Null (the default) is a legacy order, without a payment method. */
   paymentMethod?: PaymentMethod | null;
-  /** Defaults to USD, as the column does. */
+  /** Defaults to PKR; pass USD explicitly for historical fixtures. */
   currency?: Currency;
   createdAt?: Date;
   /** Fields to change in the delivery address the order records. */
@@ -392,7 +392,7 @@ export interface ProductOptions {
   category?: string;
   status?: ProductStatus;
   price?: number | string;
-  /** Defaults to USD, as the column does. */
+  /** Defaults to PKR; pass USD explicitly for historical fixtures. */
   currency?: Currency;
   costPrice?: number | string | null;
   stock?: number;

@@ -1,4 +1,5 @@
 import { formatPublicId } from '../common/public-id';
+import { SHOP_CURRENCY } from '../common/currency';
 import {
   Prisma,
   type Currency,
@@ -99,6 +100,12 @@ export async function placeOrder(
   input: PlaceOrderInput,
 ): Promise<OrderDetailRow> {
   const { lines, adjustments } = input;
+  if (input.requiredCurrency && input.requiredCurrency !== SHOP_CURRENCY) {
+    throw new PlacementError({
+      kind: 'PRODUCT_UNAVAILABLE',
+      productNumber: null,
+    });
+  }
 
   const products = await tx.product.findMany({
     where: { number: { in: lines.map((line) => line.number) } },
@@ -117,6 +124,7 @@ export async function placeOrder(
       !product ||
       product.status !== 'ACTIVE' ||
       product.archivedAt ||
+      product.currency !== SHOP_CURRENCY ||
       (input.requiredCurrency && product.currency !== input.requiredCurrency)
     ) {
       throw new PlacementError({
@@ -151,6 +159,15 @@ export async function placeOrder(
     stock: taken.get(line.productId)!,
   }));
   const currency = commonCurrency(ordered.map(({ stock }) => stock.currency));
+  const legacyLine = ordered.find(
+    ({ stock }) => stock.currency !== SHOP_CURRENCY,
+  );
+  if (legacyLine) {
+    throw new PlacementError({
+      kind: 'PRODUCT_UNAVAILABLE',
+      productNumber: legacyLine.number,
+    });
+  }
   if (currency === null) throw new PlacementError({ kind: 'MIXED_CURRENCY' });
 
   const price = priceOrder(

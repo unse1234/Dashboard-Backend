@@ -153,10 +153,10 @@ describe('Order lifecycle schema (e2e)', () => {
   });
 
   describe('currency', () => {
-    it('is USD unless the order says otherwise', async () => {
+    it('is PKR unless a historical fixture says otherwise', async () => {
       const customer = await createCustomer(ctx.prisma);
       const order = await createOrder(ctx.prisma, customer);
-      expect(order.currency).toBe('USD');
+      expect(order.currency).toBe('PKR');
     });
 
     it('can be PKR', async () => {

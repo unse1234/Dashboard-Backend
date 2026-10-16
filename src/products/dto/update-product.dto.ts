@@ -1,5 +1,13 @@
-import { IsEnum, IsInt, IsOptional, IsUUID, Min } from 'class-validator';
-import { Currency, ProductStatus } from '../../generated/prisma/client';
+import {
+  Equals,
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsUUID,
+  Min,
+} from 'class-validator';
+import { ProductStatus } from '../../generated/prisma/client';
+import { SHOP_CURRENCY } from '../../common/currency';
 import {
   Amount,
   BRAND_MAX_LENGTH,
@@ -65,12 +73,12 @@ export class UpdateProductDto {
   price?: number;
 
   /**
-   * Changing it relabels `price` and `costPrice`; nothing is converted, so send
-   * the new prices with it.
+   * Omit to retain the recorded currency. Moving a legacy product to PKR
+   * requires explicit PKR price and, when present, costPrice values.
    */
   @Omittable()
-  @IsEnum(Currency)
-  currency?: Currency;
+  @Equals(SHOP_CURRENCY, { message: 'currency must be PKR' })
+  currency?: typeof SHOP_CURRENCY;
 
   /** Null clears it. */
   @IsOptional()

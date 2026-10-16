@@ -198,18 +198,19 @@ describe('Storefront order placement (e2e)', () => {
       expect(await stockOf(mug)).toBe(2);
     });
 
-    it('places an order for a USD product in dollars', async () => {
+    it('refuses a checkout quote for a legacy USD product without changing stock', async () => {
       const gadget = await listed({ currency: 'USD', price: '10.00' });
       const items = [line(gadget, 2)];
-      const body = await orderFor(items);
-      const res = await place(randomUUID(), body).expect(201);
+      const res = await http()
+        .post('/storefront/checkout/quote')
+        .send({ items, shippingAddress: ADDRESS })
+        .expect(409);
       expect(res.body).toMatchObject({
-        currency: 'USD',
-        paymentMethod: 'COD',
-        subtotal: 20,
-        total: 20,
+        code: 'PRODUCT_UNAVAILABLE',
       });
-      expect(await stockOf(gadget)).toBe(8);
+      expect(res.body.quoteToken).toBeUndefined();
+      expect(await stockOf(gadget)).toBe(gadget.stock);
+      expect(await ctx.prisma.order.count()).toBe(0);
     });
 
     it('records the order as COD, PKR and pending, with snapshots and no actor', async () => {

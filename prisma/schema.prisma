@@ -247,7 +247,7 @@ model Order {
   paymentMethod   PaymentMethod?
   // What every amount below is denominated in, fixed when the order is placed.
   // Rows that predate this column are USD.
-  currency        Currency      @default(USD)
+  currency        Currency      @default(PKR)
   subtotal        Decimal       @db.Decimal(12, 2)
   shipping        Decimal       @db.Decimal(12, 2)
   discount        Decimal       @db.Decimal(12, 2)
@@ -376,7 +376,7 @@ model Product {
   description String?
   brand       String?
   // Storefront imagery: the primary image, and further images in display order.
-  // URLs only; there is no upload service.
+  // External/storefront URLs or relative keys managed by UploadsService.
   imageUrl    String?
   galleryUrls String[]      @default([])
   categoryId  String
@@ -385,7 +385,7 @@ model Product {
   status      ProductStatus @default(ACTIVE)
   price       Decimal       @db.Decimal(12, 2)
   // What `price` is denominated in. Rows that predate this column are USD.
-  currency    Currency      @default(USD)
+  currency    Currency      @default(PKR)
   costPrice   Decimal?      @db.Decimal(12, 2)
   stock       Int           @default(0)
   // Optimistic concurrency: every write increments it, order-driven stock changes

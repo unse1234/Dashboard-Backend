@@ -1,5 +1,6 @@
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { StorefrontStockedProductRow } from '../../products/storefront/storefront-catalog';
+import type { UploadsService } from '../../uploads/uploads.service';
 import type { BagQuoteDto } from './dto/bag-quote.dto';
 import type { QuoteTokenService } from './quote-token.service';
 import { StorefrontPricingService } from './storefront-pricing.service';
@@ -29,13 +30,40 @@ function product(
 
 describe('StorefrontQuoteService bag pricing', () => {
   const read = jest.fn<Promise<StorefrontStockedProductRow[]>, unknown[]>();
-  const pricing = new StorefrontPricingService({
-    $queryRaw: read,
-  } as unknown as PrismaService);
+  const pricing = new StorefrontPricingService(
+    { $queryRaw: read } as unknown as PrismaService,
+    {
+      publicUrl: (reference: string) =>
+        reference.startsWith('products/')
+          ? `https://api.example.com/uploads/${reference}`
+          : reference,
+    } as UploadsService,
+  );
   const quotes = new StorefrontQuoteService(pricing, {} as QuoteTokenService);
 
   beforeEach(() => {
     read.mockReset();
+  });
+
+  it('resolves uploaded image references in products returned with the bag', async () => {
+    read.mockResolvedValue([
+      product(1001, {
+        imageUrl: 'products/cover.jpg',
+        galleryUrls: ['https://cdn.example.com/side.png', 'products/back.webp'],
+      }),
+    ]);
+
+    const result = await quotes.quoteBag({
+      items: [{ productId: 'PRD-1001', quantity: 1 }],
+    });
+
+    expect(result.items[0].product).toMatchObject({
+      image: { url: 'https://api.example.com/uploads/products/cover.jpg' },
+      gallery: [
+        { url: 'https://cdn.example.com/side.png' },
+        { url: 'https://api.example.com/uploads/products/back.webp' },
+      ],
+    });
   });
 
   it.each(['add', 'increment', 'set'] as const)(
@@ -81,8 +109,8 @@ describe('StorefrontQuoteService bag pricing', () => {
     },
   );
 
-  it('adds a new line at the end and uses its currency for an empty bag', async () => {
-    read.mockResolvedValue([product(1001, { currency: 'USD' })]);
+  it('adds a new PKR line at the end of an empty PKR bag', async () => {
+    read.mockResolvedValue([product(1001)]);
 
     const result = await quotes.quoteBag({
       items: [],
@@ -91,7 +119,7 @@ describe('StorefrontQuoteService bag pricing', () => {
 
     expect(read).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
-      currency: 'USD',
+      currency: 'PKR',
       subtotal: 399.98,
       unitCount: 2,
       items: [{ productId: 'PRD-1001', quantity: 2, issue: null }],
@@ -119,7 +147,7 @@ describe('StorefrontQuoteService bag pricing', () => {
     },
   );
 
-  it('reports currency mismatch before insufficient stock for an added line', async () => {
+  it('treats a legacy USD product as unavailable before checking its stock', async () => {
     read.mockResolvedValue([
       product(1001),
       product(1002, { currency: 'USD', stock: 0, inStock: false }),
@@ -131,7 +159,7 @@ describe('StorefrontQuoteService bag pricing', () => {
         action: { type: 'add', productId: 'PRD-1002' },
       }),
     ).rejects.toMatchObject({
-      code: 'CURRENCY_MISMATCH',
+      code: 'PRODUCT_UNAVAILABLE',
       response: { statusCode: 409, productId: 'PRD-1002' },
     });
     expect(read).toHaveBeenCalledTimes(1);

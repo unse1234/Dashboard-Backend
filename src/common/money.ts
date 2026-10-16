@@ -4,7 +4,7 @@ import { Prisma } from '../generated/prisma/client';
 export type MoneyValue = Prisma.Decimal | string | number;
 
 /**
- * Amounts leave the API as JSON numbers in USD. NUMERIC(12,2) values are far
+ * Amounts leave the API as JSON numbers in their recorded currency. NUMERIC(12,2) values are far
  * inside the range a double holds exactly to the cent.
  */
 export const toAmount = (value: MoneyValue): number => Number(value);

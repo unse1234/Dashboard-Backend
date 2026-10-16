@@ -74,10 +74,10 @@ describe('Products schema (e2e)', () => {
   });
 
   describe('currency and storefront metadata', () => {
-    it('prices a product in USD, with no subtitle or images, unless told otherwise', async () => {
+    it('prices a product in PKR, with no subtitle or images, unless told otherwise', async () => {
       const product = await createProduct(ctx.prisma);
       expect(product).toMatchObject({
-        currency: 'USD',
+        currency: 'PKR',
         subtitle: null,
         imageUrl: null,
         galleryUrls: [],

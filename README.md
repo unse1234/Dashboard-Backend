@@ -75,7 +75,7 @@ Errors use Nest's standard shape `{ statusCode, message, error }`.
 | GET | `/products` | ADMIN, STAFF | `?page=1&pageSize=20&search&categoryId&status` (`pageSize` ≤ 100; `search` matches name or SKU, case-insensitive, or a product id such as `PRD-1001` or `1001`; `categoryId` is a category uuid; `status` is `ACTIVE`, `INACTIVE` or `OUT_OF_STOCK`; newest first) → `{ data, meta: { page, pageSize, total, totalPages } }`. Archived products are never listed |
 | GET | `/products/:productId` | ADMIN, STAFF | One product; `404` if unknown or archived, `400` if `:productId` is not like `PRD-1001` |
 | GET | `/products/:productId/history` | ADMIN, STAFF | `{ data: [{ id, change, occurredAt, actor }] }`, newest first, at most 50; `actor` is `null` for automatic changes |
-| POST | `/products` | ADMIN, STAFF | `{ name, sku, categoryId, price, currency?, subtitle?, brand?, description?, imageUrl?, galleryUrls?, status?, costPrice?, stock? }` → `201`; `409` if the SKU is taken (any case, archived products included), `400` for an unknown category |
+| POST | `/products` | ADMIN, STAFF | `{ name, sku, categoryId, price, currency?, subtitle?, brand?, description?, imageUrl?, galleryUrls?, status?, costPrice?, stock? }` → `201`; currency defaults to PKR and only PKR is accepted; `409` if the SKU is taken, `400` for an unknown category |
 | PATCH | `/products/:productId` | ADMIN, STAFF | `{ version, ...fields }`; `version` is the one the editor loaded. Only fields that differ are written. `409` when the product changed since that version, or the SKU is taken. `subtitle`, `brand`, `description`, `imageUrl` and `costPrice` can be cleared with `null`, `galleryUrls` with `[]` |
 | POST | `/products/archive` | ADMIN | `{ productIds: ["PRD-1001", ...] }` (1–100) → `200 { archived }`, the number archived by this call; unknown or already archived ids are skipped, so repeating it is harmless |
 | GET | `/orders` | ADMIN, STAFF | `?page=1&pageSize=20&search&status&paymentStatus&customerId&sortBy&sortOrder` (`pageSize` ≤ 100; `search` matches the customer's name or email, case-insensitive, or an order id such as `ORD-10001` or `10001`; `status` is `PENDING`, `PROCESSING`, `SHIPPED`, `DELIVERED` or `CANCELLED`; `paymentStatus` is `PENDING`, `PAID` or `REFUNDED`; `customerId` is like `CUS-1001`; `sortBy` is `id`, `customer`, `createdAt`, `itemCount`, `total`, `paymentStatus` or `status`, `sortOrder` is `asc` (default) or `desc`; newest first without `sortBy`) → `{ data, meta: { page, pageSize, total, totalPages } }` |
@@ -114,15 +114,15 @@ lowercase letter, an uppercase letter and a number.
 `/storefront/products` needs no sign-in and is read-only. It is a separate controller with its own
 DTOs and projection; the dashboard's `/products` routes stay behind authentication.
 
-- **What is visible.** A product that is `ACTIVE`, not archived and with a price above zero, in
-  whichever currency (`PKR` or `USD`) it is priced. Sold-out products are listed, with
+- **What is visible.** A product that is `ACTIVE`, not archived and positively
+  priced in PKR. Legacy USD products are excluded until explicitly repriced. Sold-out products are listed, with
   `inStock: false`. A price is never converted or relabelled: it is shown, quoted and charged in
   the product's own currency. `/storefront/catalog-readiness` lists what is being held back.
-- **One currency per bag.** A bag, a quote and an order each have one currency: that of the bag's
-  first product. Adding a product in another currency is `409 CURRENCY_MISMATCH` (with the
-  `productId`); a bag that already mixes them comes back with that line's `issue` set to
-  `CURRENCY_MISMATCH`, unpriced and left out of the subtotal, and checkout is blocked until it is
-  removed. The quote token carries the currency, and an order is refused if a product's currency
+- **PKR-only new sales.** Every new bag, quote and order uses PKR. Adding a legacy USD
+  product is `409 PRODUCT_UNAVAILABLE` (with the
+  `productId`); a stale USD line comes back with its `issue` set to
+  `PRODUCT_UNAVAILABLE`, unpriced and left out of the subtotal, and checkout is blocked until it is
+  removed. The quote token carries PKR, and an order is refused if a product's currency
   changed after the quote.
 - **What is returned.** `id`, `name`, `subtitle`, `description`, `brand`, `category { id, name }`,
   `price`, `currency`, `image { url, alt }` (`null` without one), `gallery` and `inStock`. Never the
@@ -146,10 +146,10 @@ the shopper did (`action`) and renders what comes back.
   accepted with `add` and `set`.
 - **Refused actions.** An action that would put something that cannot be bought into the bag is
   `409` and changes nothing: `PRODUCT_UNAVAILABLE` (not for sale), `INSUFFICIENT_STOCK` (not that
-  many) or `CURRENCY_MISMATCH` (another currency than the bag), with the `productId`. Taking away is always allowed.
+  many), with the `productId`. Legacy USD products are unavailable for new sales. Taking away is always allowed.
 - **Lines that went bad.** A product that stops being buyable after it was added is not an error:
   its line comes back with `issue` set (`PRODUCT_UNAVAILABLE`, with `product: null` and no price,
-  `INSUFFICIENT_STOCK` or `CURRENCY_MISMATCH`), `hasIssues` is `true`, and checkout is blocked until the shopper removes
+  or `INSUFFICIENT_STOCK`), `hasIssues` is `true`, and checkout is blocked until the shopper removes
   or reduces it. The response never says how many are left.
 - **Invalid bags.** `400 INVALID_BAG`: a product repeated (in any letter case), a quantity outside
   1-1000 once merged, more than 100 products. `400 ORDER_TOO_LARGE`: worth more than
@@ -235,7 +235,7 @@ order and payment status and zero shipping, tax and discount, and prices every l
 Customers are storefront shoppers, not dashboard users: they have their own `Customer` table,
 never sign in here, and the API is read-only. Responses use public ids only (`CUS-<number>`,
 `ORD-<number>`); internal uuids are never returned. Enums are sent as stored (`SHIPPING`,
-`DELIVERED`, ...). Amounts are numbers in USD, stored as `NUMERIC(12,2)`.
+`DELIVERED`, ...). Amounts are numbers in each record's currency, stored as `NUMERIC(12,2)`.
 
 Statistics are computed from the orders on every read: `totalOrders` counts every order,
 cancelled ones included; `totalSpent` sums the totals of orders that were **not** cancelled,
@@ -263,7 +263,7 @@ There is no storefront yet, so data comes from the dev seed (see Commands).
 
 A product is one sellable unit: one SKU, one price and one stock count (there are no variants).
 Responses use the public id `PRD-<number>`; internal uuids are never returned. Prices are
-numbers in the product's `currency` (`USD` or `PKR`) with at most two decimals, stored as
+numbers in the product's recorded currency with at most two decimals, stored as
 `NUMERIC(12,2)`. Categories are seeded by a
 migration; there is no category management yet.
 
@@ -279,9 +279,11 @@ migration; there is no category management yet.
   acknowledged without a new version.
 - **History.** Each change is recorded in the same transaction as the change, with who made it
   (`null`, shown as "System", for automatic changes), and phrased for the History tab.
-- **Currency.** Every product has a `currency` (`USD` by default; existing products are USD).
-  Changing it relabels the price, it never converts it, so send the new prices with it. A
-  currency change is recorded in the history as a price change.
+- **Currency.** New products and imports use PKR; API currency input, when supplied,
+  must be PKR. Existing USD records remain unchanged and readable in the dashboard.
+  Moving a legacy product to PKR requires explicitly supplied price and, when a cost
+  exists, costPrice values. No exchange rate or automatic relabelling is applied.
+  See [currency policy and migration instructions](CURRENCY.md).
 - **Storefront fields.** `subtitle` (up to 160 characters), `imageUrl` and `galleryUrls` (up to
   10, in display order, no repeats). An image is an `http(s)` URL or a path starting with `/`;
   `javascript:`, `data:` and `//host` references are refused.
@@ -302,9 +304,9 @@ Orders keep **snapshots** of the customer, both addresses and every line (produc
 SKU and unit price) as they were when the order was placed, so an order reads the same
 whatever later happens to the customer or the products. Only its status and payment status
 ever change afterwards. Amounts are `NUMERIC(12,2)` in the order's `currency`, computed with
-exact decimals. The currency is the one its products are priced in (taken in the same statement
-that takes the stock); an order that mixes currencies is refused with `400` and takes nothing.
-Nothing is converted between currencies. Orders that predate currencies are `USD`.
+exact decimals. New orders require PKR products (read in the same statement
+that takes the stock); an order containing legacy USD products is refused with `400` and takes nothing.
+Nothing is converted between currencies. Historical USD orders retain USD, including on status updates and idempotent replays.
 
 **Payment method.** `paymentMethod` is `null` (legacy or unspecified) or `COD`. An order without
 a method must be paid before it ships. A `COD` order may be `SHIPPED` while its payment is still

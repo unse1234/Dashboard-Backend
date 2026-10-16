@@ -173,7 +173,7 @@ describe('Customers (e2e)', () => {
         joinedAt: '2026-01-02T03:04:05.000Z',
         totalOrders: 1,
         totalSpent: 42.5,
-        spentByCurrency: [{ currency: 'USD', amount: 42.5 }],
+        spentByCurrency: [{ currency: 'PKR', amount: 42.5 }],
         lastOrderAt: '2026-02-01T00:00:00.000Z',
       });
       const raw = JSON.stringify(res.body);
@@ -537,7 +537,7 @@ describe('Customers (e2e)', () => {
         joinedAt: '2025-12-01T00:00:00.000Z',
         totalOrders: 5,
         totalSpent: 10 + 20 + 30 + 50,
-        spentByCurrency: [{ currency: 'USD', amount: 10 + 20 + 30 + 50 }],
+        spentByCurrency: [{ currency: 'PKR', amount: 10 + 20 + 30 + 50 }],
         lastOrderAt: '2026-01-05T00:00:00.000Z',
       });
 
@@ -585,7 +585,7 @@ describe('Customers (e2e)', () => {
           id: `ORD-${day5.number}`,
           customerId: cus(customer),
           total: 50,
-          currency: 'USD',
+          currency: 'PKR',
           status: 'PENDING',
           createdAt: '2026-01-05T00:00:00.000Z',
         },
@@ -593,7 +593,7 @@ describe('Customers (e2e)', () => {
           id: `ORD-${day4.number}`,
           customerId: cus(customer),
           total: 40,
-          currency: 'USD',
+          currency: 'PKR',
           status: 'CANCELLED',
           createdAt: '2026-01-04T00:00:00.000Z',
         },
@@ -601,7 +601,7 @@ describe('Customers (e2e)', () => {
           id: `ORD-${day3.number}`,
           customerId: cus(customer),
           total: 30,
-          currency: 'USD',
+          currency: 'PKR',
           status: 'PROCESSING',
           createdAt: '2026-01-03T00:00:00.000Z',
         },

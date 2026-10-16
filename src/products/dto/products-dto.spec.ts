@@ -161,6 +161,7 @@ describe('CreateProductDto', () => {
 
   it.each([
     ['a currency that is not supported', { currency: 'EUR' }],
+    ['a legacy currency on a new product', { currency: 'USD' }],
     ['a lower-case currency', { currency: 'pkr' }],
     ['a null currency', { currency: null }],
     ['a subtitle over 160 characters', { subtitle: 's'.repeat(161) }],
@@ -284,6 +285,7 @@ describe('UpdateProductDto', () => {
 
   it.each([
     ['an unsupported currency', { currency: 'EUR' }],
+    ['switching back to a legacy currency', { currency: 'USD' }],
     ['a null currency', { currency: null }],
     ['an unsafe image', { imageUrl: 'javascript:alert(1)' }],
     ['an unsafe gallery entry', { galleryUrls: ['data:text/html,x'] }],

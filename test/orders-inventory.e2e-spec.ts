@@ -204,12 +204,15 @@ describe('Orders and stock (e2e)', () => {
       expect(read).toEqual(order);
     });
 
-    it('stamps the order with the currency its products are priced in', async () => {
+    it('places PKR orders and refuses legacy USD products without taking stock', async () => {
       const rupees = await createProduct(ctx.prisma, {
         price: '2800.00',
         currency: 'PKR',
       });
-      const dollars = await createProduct(ctx.prisma, { price: '10.00' });
+      const dollars = await createProduct(ctx.prisma, {
+        price: '10.00',
+        currency: 'USD',
+      });
       const customer = await createCustomer(ctx.prisma);
 
       const pkr = await place(
@@ -221,16 +224,16 @@ describe('Orders and stock (e2e)', () => {
         total: 5600,
       });
 
-      const usd = await place(
+      await place(
         orderFor(customer, [{ product: dollars, quantity: 1 }]),
-      ).expect(201);
-      expect(usd.body).toMatchObject({ currency: 'USD', total: 10 });
+      ).expect(400);
+      expect(await stockOf(dollars)).toBe(dollars.stock);
 
       const stored = await ctx.prisma.order.findMany({
         select: { currency: true },
         orderBy: { number: 'asc' },
       });
-      expect(stored.map((o) => o.currency)).toEqual(['PKR', 'USD']);
+      expect(stored.map((o) => o.currency)).toEqual(['PKR']);
     });
 
     it('records the stock change on each product, with the order and no author', async () => {
@@ -482,9 +485,7 @@ describe('Orders and stock (e2e)', () => {
           ]),
         ).expect(400);
 
-        expect(res.body.message).toBe(
-          'All products in an order must be priced in the same currency',
-        );
+        expect(res.body.message).toMatch(/not available/i);
         expect(await stockOf(dollars)).toBe(10);
         expect(await stockOf(rupees)).toBe(10);
         expect(await ctx.prisma.order.count()).toBe(0);

@@ -169,6 +169,17 @@ export class ProductsService {
           throw new ConflictException(STALE_VERSION_MESSAGE);
         }
 
+        if (
+          dto.currency !== undefined &&
+          dto.currency !== current.currency &&
+          (dto.price === undefined ||
+            (current.costPrice !== null && dto.costPrice === undefined))
+        ) {
+          throw new BadRequestException(
+            'Changing currency requires an explicit price and costPrice when a cost is recorded',
+          );
+        }
+
         const changes = changedFields(current, dto);
         // The form sends every field every time, so "nothing differs" is normal:
         // acknowledge it without bumping the version or writing history.

@@ -151,7 +151,7 @@ describe('Storefront catalogue (e2e)', () => {
       expect((res.body as Page).meta.total).toBe(2);
     });
 
-    it('shows a USD product in its own currency, next to PKR ones', async () => {
+    it('shows only PKR products and hides legacy USD prices from new sales', async () => {
       const rupees = await listed({ name: 'In rupees' });
       const dollars = await createProduct(ctx.prisma, {
         name: 'In dollars',
@@ -162,12 +162,10 @@ describe('Storefront catalogue (e2e)', () => {
       const byId = Object.fromEntries(
         (res.body as Page).data.map((p) => [p.id, p]),
       );
-      expect(Object.keys(byId).sort()).toEqual(
-        [prd(rupees), prd(dollars)].sort(),
-      );
-      expect(byId[prd(dollars)]).toMatchObject({ price: 10, currency: 'USD' });
+      expect(Object.keys(byId).sort()).toEqual([prd(rupees)]);
+      expect(byId[prd(dollars)]).toBeUndefined();
       expect(byId[prd(rupees)]).toMatchObject({ price: 1500, currency: 'PKR' });
-      await visit(`/storefront/products/${prd(dollars)}`).expect(200);
+      await visit(`/storefront/products/${prd(dollars)}`).expect(404);
     });
   });
 
@@ -518,7 +516,7 @@ describe('Storefront catalogue (e2e)', () => {
     it('names the active products the storefront is hiding, and counts the rest', async () => {
       await listed({ name: 'Shown 1' });
       await listed({ name: 'Shown 2', stock: 0 });
-      await createProduct(ctx.prisma, {
+      const dollars = await createProduct(ctx.prisma, {
         name: 'In dollars',
         currency: 'USD',
         price: '10.00',
@@ -532,9 +530,10 @@ describe('Storefront catalogue (e2e)', () => {
         .set(bearer(staffToken))
         .expect(200);
       expect(res.body).toEqual({
-        eligible: 3,
-        excludedCount: 1,
+        eligible: 2,
+        excludedCount: 2,
         excluded: [
+          { id: prd(dollars), name: 'In dollars', currency: 'USD', price: 10 },
           { id: prd(free), name: 'Unpriced', currency: 'PKR', price: 0 },
         ],
       });

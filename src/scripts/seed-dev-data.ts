@@ -13,6 +13,7 @@
  * The data is the same on every run.
  */
 import { randomUUID } from 'node:crypto';
+import { SHOP_CURRENCY } from '../common/currency';
 import { parseArgs } from 'node:util';
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
@@ -430,7 +431,7 @@ function random(seed: number): () => number {
 }
 
 const money = (cents: number) => (cents / 100).toFixed(2);
-const dollars = (cents: number) => cents / 100;
+const amountFromMinorUnits = (cents: number) => cents / 100;
 
 /**
  * Catalogue rows and their history. The first entries are the oldest, so PRD-
@@ -460,6 +461,7 @@ function buildCatalogue(now: Date, categoryIds: Map<string, string>) {
       categoryId,
       status: entry.status ?? 'ACTIVE',
       price: money(entry.priceCents),
+      currency: SHOP_CURRENCY,
       costPrice: entry.costCents === null ? null : money(entry.costCents),
       stock: entry.stock,
       archivedAt: entry.archived ? new Date(now.getTime() - 5 * DAY_MS) : null,
@@ -480,8 +482,9 @@ function buildCatalogue(now: Date, categoryIds: Map<string, string>) {
         type: 'PRICE_CHANGED',
         data: {
           field: 'price',
-          from: dollars(Math.round(entry.priceCents * 1.08)),
-          to: dollars(entry.priceCents),
+          from: amountFromMinorUnits(Math.round(entry.priceCents * 1.08)),
+          to: amountFromMinorUnits(entry.priceCents),
+          currency: SHOP_CURRENCY,
         },
         createdAt: later(30),
       });
@@ -621,6 +624,7 @@ function buildData(now: Date, orderable: SeededProduct[]) {
         customerPhone: phone,
         status,
         paymentStatus,
+        currency: SHOP_CURRENCY,
         itemCount,
         subtotal: money(subtotal),
         shipping: money(shipping),

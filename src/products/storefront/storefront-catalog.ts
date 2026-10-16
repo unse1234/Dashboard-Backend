@@ -1,16 +1,16 @@
 import { Prisma, type Currency } from '../../generated/prisma/client';
+import { SHOP_CURRENCY } from '../../common/currency';
 
 /**
- * The currency of an empty bag, which has no product to take one from. A
- * product's price is never relabelled or converted: it is shown, quoted and
- * charged in the currency it is stored in.
+ * Currency for every new bag, quote and sale. Legacy prices are never
+ * relabelled or converted; they must be explicitly repriced before sale.
  */
-export const DEFAULT_BAG_CURRENCY: Currency = 'PKR';
+export const DEFAULT_BAG_CURRENCY = SHOP_CURRENCY;
 
 /**
  * Which products the public catalogue shows (the query aliases `Product` as
- * `p`): on sale, not archived, and with a real price, in whichever currency it
- * is priced. Sold-out products are included; they are listed as not in stock.
+ * `p`): on sale, not archived, with a real price in the shop's currency.
+ * Legacy USD products remain in the dashboard until explicitly repriced.
  *
  * Everything public reads through this one condition, so the list, the details
  * and the readiness report can never disagree about what is visible.
@@ -19,6 +19,7 @@ export const eligibleProduct = Prisma.sql`(
   p."archivedAt" IS NULL
   AND p."status" = 'ACTIVE'
   AND p."price" > 0
+  AND p."currency" = ${SHOP_CURRENCY}::"Currency"
 )`;
 
 /** The columns of a product row the public projection is built from. */

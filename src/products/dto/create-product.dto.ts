@@ -1,5 +1,6 @@
-import { IsEnum, IsOptional, IsUUID } from 'class-validator';
-import { Currency, ProductStatus } from '../../generated/prisma/client';
+import { Equals, IsEnum, IsOptional, IsUUID } from 'class-validator';
+import { ProductStatus } from '../../generated/prisma/client';
+import { SHOP_CURRENCY } from '../../common/currency';
 import {
   Amount,
   BRAND_MAX_LENGTH,
@@ -49,10 +50,10 @@ export class CreateProductDto {
   @Amount()
   price!: number;
 
-  /** What `price` and `costPrice` are in. Defaults to USD. */
+  /** Defaults to PKR; other currencies are retained only on legacy records. */
   @Omittable()
-  @IsEnum(Currency)
-  currency?: Currency;
+  @Equals(SHOP_CURRENCY, { message: 'currency must be PKR' })
+  currency?: typeof SHOP_CURRENCY;
 
   @IsOptional()
   @Amount()

@@ -320,6 +320,10 @@ describe('Product imports (e2e)', () => {
         include: { events: true },
       });
       expect(products).toHaveLength(2);
+      expect(products.map((product) => product.currency)).toEqual([
+        'PKR',
+        'PKR',
+      ]);
       expect(products[0]).toMatchObject({
         name: 'Blue Mug',
         sku: 'MUG-1',
