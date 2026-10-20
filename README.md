@@ -215,6 +215,165 @@ order and payment status and zero shipping, tax and discount, and prices every l
   returns the stock once. Staff can ship it while its payment is `PENDING`, record the cash when
   it is collected, and then mark it delivered (see Lifecycle).
 
+#### With email confirmation (`ORDER_CONFIRMATION_ENABLED=true`; off by default)
+
+The same endpoint, body, validation, quote check, stock rules, idempotency and errors apply.
+**Keep this off** until the confirmation page and the expiry job exist: without them an
+awaiting order can be neither confirmed nor released.
+
+- **Writes.** One transaction writes the order with `confirmationStatus: AWAITING_CONFIRMATION`,
+  `confirmationEmail` (the lower-cased contact email) and `confirmationExpiresAt`
+  (`ORDER_CONFIRMATION_TTL_MINUTES` from now, default 60). The stock it takes is the
+  reservation. The same transaction records the confirmation email in the outbox with its
+  single-use link token, and a receipt token. If any of it fails, none of it happened: no order,
+  no customer, no stock taken.
+- **Sending.** The email is sent after the commit. A failed or slow mail server neither delays
+  nor fails the request, and the outbox retries it.
+- **Answer** (`201`):
+
+  ```json
+  {
+    "outcome": "CONFIRMATION_REQUIRED",
+    "confirmation": {
+      "status": "AWAITING_CONFIRMATION",
+      "email": "ayesha@example.com",
+      "expiresAt": "2026-10-16T10:05:00.000Z",
+      "receiptToken": "cr_…"
+    },
+    "order": { "currency": "PKR", "paymentMethod": "COD", "items": [], "subtotal": 0, "shipping": 0, "tax": 0, "discount": 0, "total": 0 }
+  }
+  ```
+
+  It carries no order reference, address or contact detail.
+- **`receiptToken`.** The guest's narrow credential for this order's confirmation status and
+  for asking for the email again (endpoints to come):
+  - it lasts until a day after the deadline;
+  - it does not confirm and shows nothing else;
+  - only its hash is stored, so a retry is answered with a new one, and earlier ones keep
+    working.
+- **Retries and double-clicks.** The same key returns the same order: one reservation, one
+  email, one link. A replay is answered as what the order is, whatever the switch says now: a
+  receipt for an order placed while confirmation was off, otherwise `CONFIRMATION_REQUIRED`.
+  The `status` is `CONFIRMED` or `EXPIRED` once that is so, and `EXPIRED` as soon as the
+  deadline has passed.
+- **Not claimed by an account.** The order is never given to a storefront account because the
+  typed email matches one. Customer matching (the dashboard's bookkeeping) is unchanged.
+- **At most 3 awaiting orders per email.** The 4th is `429 TOO_MANY_PENDING_ORDERS`. The
+  count is kept in the database, under an advisory lock per address.
+
+#### The confirmation lifecycle
+
+All public. Every token goes in the request body, never in a URL, and only `confirm`
+changes an order. There is no GET that takes a token, so a link opened by a person or a mail
+scanner confirms nothing.
+
+| Route | Credential | Answer |
+|---|---|---|
+| `GET /storefront/features` | none | `{ orderConfirmation, storefrontAccounts }` |
+| `POST /storefront/order-confirmations/preview` | `{ token: "oc_…" }` (the email link) | `200 { status }`. `AWAITING_CONFIRMATION` also carries `expiresAt`, the amounts and `delivery { recipientName, city, region, country }`. `CONFIRMED`, `EXPIRED` and `LINK_REPLACED` carry nothing else. Writes nothing. |
+| `POST /storefront/order-confirmations/confirm` | `{ token: "oc_…" }` | `200 { outcome: "CONFIRMED", alreadyConfirmed, order (receipt), delivery, account }`; `410 CONFIRMATION_EXPIRED`; `410 CONFIRMATION_LINK_REPLACED` |
+| `POST /storefront/checkout-receipts/status` | `{ receiptToken: "cr_…" }` | `200 { status, expiresAt, email, resend: { remaining, availableAt } }` |
+| `POST /storefront/checkout-receipts/resend-confirmation` | `{ receiptToken }` | `202` (same body as status); `409 CONFIRMATION_NOT_PENDING { status }`; `429 RESEND_TOO_SOON { retryAfterSeconds }`; `429 RESEND_LIMIT_REACHED` |
+
+Unknown, malformed, wrong-purpose or expired tokens get `404 CONFIRMATION_NOT_FOUND` or
+`404 RECEIPT_NOT_FOUND`, the same body whatever the reason.
+
+- **Confirming** happens in one transaction holding the order's row:
+  - the state and the deadline are read under the lock (the deadline by the database's clock);
+  - the link token is used;
+  - the order becomes `CONFIRMED` by a compare-and-set;
+  - its stock stays as taken at placement (nothing is deducted again);
+  - its other links stop working and its queued confirmation emails are cancelled;
+  - a storefront account with the proven address gets the order (`account: SIGN_IN`).
+
+  Otherwise, with `STOREFRONT_ACCOUNTS_ENABLED`, a 15-minute `ACCOUNT_SETUP` grant
+  (`as_…`) is issued; it is a separate token that confirms nothing.
+- **Pressing confirm again,** or several clicks at once, answers the same order with
+  `alreadyConfirmed: true` and `account: NONE`: a replay never mints a new grant.
+- **Past the deadline,** confirm expires the order there and then (and returns its stock)
+  before answering `410`.
+- **Resending** requires the receipt token, which only the person who placed the order holds.
+  It sends a new link and stops the old ones working: their tokens are voided and their
+  still-queued emails cancelled. The deadline stays the same, so a resend never extends the
+  reservation. At most 3 resends per order, one a minute (counted in the database), plus
+  3/min/client.
+- **Expiry** (`OrderExpiryService`): an awaiting order past its deadline becomes
+  `CANCELLED`/`EXPIRED` in one compare-and-set. Its stock comes back through the same code as
+  a staff cancellation (`ORDER_CANCELLED` stock history, a `STATUS_CHANGED` event with no
+  actor), its links are voided and its emails cancelled. It happens exactly once, whoever gets
+  there first:
+  - `npm run jobs:run` (every few minutes);
+  - a checkout quote or an order needing the same products (lazy, up to 20 orders);
+  - a confirm or resend on that order.
+
+  One order per transaction. A sweep skips orders another transaction holds.
+- **Dashboard.** `PATCH /orders/:id/status` and `/payment-status` answer `409` ("waiting
+  for the customer to confirm it by email…") for an awaiting order: staff can neither
+  fulfil, cancel nor record payment before confirmation. An expired order is cancelled like
+  any other. The compare-and-set includes the confirmation state, so a confirmation or expiry
+  at the same moment makes the staff change fail cleanly.
+- **Keep `ORDER_CONFIRMATION_ENABLED` off** until the storefront is deployed with its
+  confirmation pages, and schedule `npm run jobs:run` before turning it on.
+
+### Storefront accounts (`STOREFRONT_ACCOUNTS_ENABLED`; off by default)
+
+Shopper accounts, entirely separate from staff users. While the flag is off, every
+`/storefront/account/*` route answers the `404` of an unknown route. Keep it off until the
+storefront's account pages exist: the confirmation page and the emailed links point at them.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /storefront/account/setup/preview` | `{ setupToken }` | `200 { status: READY \| ACCOUNT_EXISTS, email, expiresAt }`; `404 SETUP_TOKEN_INVALID`; `410 SETUP_TOKEN_EXPIRED`. Uses nothing |
+| `POST /storefront/account/setup` | `{ setupToken, password, confirmPassword }` | `201` session (below); `400 PASSWORD_MISMATCH`; `404`/`410` as above; `409 ACCOUNT_EXISTS` |
+| `POST /storefront/account/setup-link` | `{ email }` or `{ setupToken }` | `202`, the same message for every address |
+| `POST /storefront/account/session` | `{ email, password }` | `200` session; `401` for every failure |
+| `POST /storefront/account/session/refresh` | cookie; CSRF header | `200` session, cookie rotated; `401` |
+| `POST /storefront/account/session/sign-out` | cookie; CSRF header | `204`, cookie cleared |
+| `GET /storefront/account/me` | `Authorization: Bearer` | `200 { email, createdAt }`; `401` |
+| `POST /storefront/account/password/forgot` | `{ email }` | `202`, the same message for every address |
+| `POST /storefront/account/password/reset` | `{ token, password, confirmPassword }` | `200`; `400 PASSWORD_MISMATCH`; `400 RESET_TOKEN_INVALID` |
+| `GET /storefront/account/orders?page&pageSize` | `Authorization: Bearer` | `200 { data, meta }`: the account's orders, newest first, `pageSize` ≤ 50 (default 10); any other query parameter is `400` |
+| `GET /storefront/account/orders/:orderId` | `Authorization: Bearer` | `200` one order (`ORD-…`); `404` alike for another account's, an unknown or a malformed id |
+
+A session answer is `{ accessToken, tokenType: "Bearer", expiresIn, account: { email,
+createdAt } }`, with the refresh token in the HttpOnly cookie `sf_refresh_token` (path
+`/storefront/account/session`; `Secure`, `SameSite` and `Domain` from the `COOKIE_*`
+settings; `STOREFRONT_SESSION_TTL_DAYS`, default 30).
+
+- **Setup** creates an account only for the address the setup token was issued for: the
+  grant from confirming an order (15 minutes) or an emailed setup link (60 minutes). The
+  request has no email field. In one transaction, serialised per address: the token is used
+  once, the account is inserted (`ON CONFLICT` on the unique address: two setups at once make
+  one account), the address's **confirmed** orders become the account's, its other setup
+  tokens stop working, and a session starts. An existing account is never changed: `409`,
+  sign in or reset the password instead.
+- **Which orders an account owns.** Only `CONFIRMED` orders whose recorded confirmation
+  address is the account's address. They are linked when confirmed (if the account
+  exists), at setup, and again before each history read, which catches an order confirmed
+  while its account was being created. The customer record an order was filed under, and
+  the email text of older orders, play no part:
+  - orders placed before email confirmation, or by staff, are never attached;
+  - several customer records can end up under one account, and none of them, and no order
+    snapshot, is changed.
+
+  A CHECK and a trigger enforce the same rule, and an account's address cannot change.
+- **History** answers carry only the order's own snapshots: reference, dates, status,
+  payment, amounts, lines and the delivery details typed at checkout. They never carry the
+  customer record, internal ids, billing address, SKUs, confirmation address or
+  idempotency data.
+- **New setup link.** For an address with a confirmed order and no account; the shopper
+  types the address, or sends the expired setup token. The link goes to that inbox only.
+- **Password reset.** A `pr_` link (30 minutes, single use, only the newest works). Using it
+  replaces the password and signs the account out everywhere; it does not sign in.
+- **Account emails** go through the outbox like the confirmation email, at most one a minute
+  and 5 a day per kind and address (counted in the database). When one is about to be sent,
+  its link is checked again: one already used, replaced or expired is not sent.
+- **Separate from staff.** Storefront access tokens are signed with their own key (derived
+  from `JWT_ACCESS_SECRET` by HKDF), for the audience `ecom-dash-storefront`, with
+  `typ: "storefront"`, for `STOREFRONT_ACCESS_TTL_SECONDS` (default 900). Staff guards refuse
+  them and the storefront guard refuses staff tokens; sessions, cookies and login tables are
+  separate too.
+
 ### Deactivating and deleting users
 
 - **Deactivate** (`isActive: false`): sign-in and refresh stop working, and every session of
@@ -387,6 +546,33 @@ client calling it cross-origin would need `Idempotency-Key` added to the CORS al
 > accepted satisfies the new one, so it cannot fail on existing data. Deploy it after
 > `20261013100000_product_storefront_metadata`.
 
+> **Deploying:** migration `20261016130000_order_confirmation_and_storefront_accounts`
+> (deploy after `20261016110000_product_currency_pkr`) prepares email-confirmed storefront
+> orders and storefront accounts, which nothing uses yet:
+> - `Order` gains `confirmationStatus` (default `EXEMPT`, which every existing row gets: it was
+>   never asked to confirm), `confirmationEmail` (immutable, by trigger), `confirmationExpiresAt`,
+>   `confirmedAt` and an optional `storefrontAccountId`;
+> - new tables `StorefrontAccount`, `StorefrontSession`, `StorefrontToken` and `EmailJob`;
+> - CHECKs tie the confirmation fields to each other and to the order status.
+>
+> `20261016140000_email_job_protected_payload` then adds the outbox's sealed-secret column.
+> Both are additive, and existing rows satisfy every new rule, so neither can fail on existing
+> data. Old code keeps working against the migrated database. A backend built with the new
+> Prisma client needs them applied first.
+>
+> `20261016150000_checkout_receipt_token` and `20261016160000_storefront_account_recovery`
+> follow. The latter adds password reset tokens (bound to an account: `StorefrontToken.orderId`
+> becomes nullable, with a CHECK that every other token still has its order), the account
+> email types and three indexes. Additive as well.
+>
+> `20261020100000_storefront_order_ownership` then:
+> - tightens order ownership to confirmed orders whose confirmation address is the account's
+>   (a CHECK and a trigger);
+> - makes an account's email immutable;
+> - reshapes the account-history index.
+>
+> It changes no row, and existing rows pass, because nothing owned an order before.
+
 ## Product CSV imports
 
 `ADMIN` and `STAFF` can validate a UTF-8 product CSV at `POST /imports/preview` and
@@ -419,6 +605,9 @@ as the API.
   expiring (30 min / 72 h / 24 h by default). Responses never contain them.
 - CSRF: cookie endpoints require an allowed `Origin`/`Referer` plus the custom header; the
   cookie is SameSite and path-scoped.
+- Storefront (shopper) accounts follow the same rules with their own key, audience, token
+  type, session table and cookie; neither kind of token is accepted by the other side's
+  guards (see "Storefront accounts").
 - Rate limiting on credential endpoints, helmet headers, strict validation
   (`whitelist` + `forbidNonWhitelisted`), `Cache-Control: no-store`.
 
@@ -428,7 +617,45 @@ as the API.
 it). `MAIL_TRANSPORT=smtp` sends through any SMTP provider via nodemailer using `SMTP_HOST`,
 `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`. The SMTP path has not been
 exercised against a real provider (no credentials were available); test it with your provider
-or a local catcher such as Mailpit before relying on it.
+or a local catcher such as Mailpit before relying on it. SMTP connections time out after 15 s,
+and an idle socket after 60 s.
+
+**Hosting caveat:** Render's free web services cannot open outbound connections on ports 25,
+465 or 587, so SMTP cannot deliver from a free instance. Use a paid instance, or a provider
+reachable over HTTPS.
+
+### Email outbox (order confirmation)
+
+Shopper emails that must not be lost go through a durable outbox (`src/email-outbox/`). Staff
+emails (invitations, resets, verification) are still sent directly:
+
+- **Recording.** The email is recorded as an `EmailJob` row in the same transaction as the
+  change that needs it. Recording the same `idempotencyKey` twice is a no-op.
+- **Sending.** The job is sent after commit by `EmailOutboxDispatcher.dispatchAfterCommit`, a
+  fast path that shutdown waits for. Whatever that misses is sent by the scheduled run,
+  `npm run jobs:run`; schedule it every few minutes (e.g. a Render Cron Job running
+  `node dist/scripts/run-jobs.js`). Pending jobs survive restarts.
+- **Claiming.** A worker claims jobs with `FOR UPDATE SKIP LOCKED` and a 5-minute lease, so any
+  number of workers can run at once without sending a job twice. Every write about a job is
+  conditional on the worker's lease.
+- **Retries.** Failures are retried after 1, 5, 15 and 30 minutes, at most 5 attempts in all.
+  An SMTP 5xx gives up at once, and no retry is scheduled past the moment the email stops
+  mattering (an order's confirmation deadline).
+- **Provider idempotency.** Every attempt carries the job id as its idempotency key. SMTP turns
+  it into a stable `Message-ID`, so a retry of the same email is recognisable as a duplicate.
+- **The link token.** An order-confirmation token is created once, when the email is recorded:
+  - its SHA-256 goes into `StorefrontToken`;
+  - the token itself is sealed (AES-256-GCM, with a key derived from `JWT_ACCESS_SECRET`, bound
+    to the job) in `EmailJob.protectedPayload`;
+  - every retry therefore sends the same link;
+  - the sealed token is erased as soon as the job is sent, fails or is cancelled, and a CHECK
+    enforces this;
+  - rotating `JWT_ACCESS_SECRET` makes pending sealed tokens unreadable, and those jobs fail
+    with `PAYLOAD_UNREADABLE`.
+- **Links** are built from `STOREFRONT_URL` (default `FRONTEND_URL`), never from a request. The
+  token travels in the URL fragment (`/orders/confirm#token=…`), so it never reaches a server
+  log or a `Referer`. Logs and stored failure messages are redacted. The development
+  `console` transport prints whole emails, links included, by design.
 
 ## Commands
 
@@ -439,6 +666,12 @@ or a local catcher such as Mailpit before relying on it.
 - `npm run test:e2e` — HTTP + database integration tests (see below).
 - `npm run admin:create -- --email … --name …` — bootstrap the first admin.
 - `npm run imports:cleanup` — remove expired import data and recover interrupted jobs.
+- `npm run jobs:run` — one bounded pass of scheduled work: expire orders nobody confirmed in
+  time (returning their stock), send due outbox emails, then purge storefront tokens a day
+  past expiry, finished email jobs and ended storefront sessions after 30 days (orders are
+  never purged). It prints `{ ordersExpired, emails, purged }`.
+  Schedule it every few minutes; in production run `node dist/scripts/run-jobs.js` after a
+  build.
 - `npm run seed:dev -- --confirm [--reset]` — a sample catalogue, customers, addresses and
   orders (order lines refer to the catalogue's products). It never reads `.env`: set
   `DATABASE_URL` explicitly to a development or test database. It refuses `NODE_ENV=production`,
@@ -530,6 +763,15 @@ customers by orders or spend gets slow, the other path is storing the three stat
   (`DELETE … WHERE "expiresAt" < now() - interval '30 days'`).
 - Refresh sessions slide (each refresh extends them by `REFRESH_TOKEN_TTL_DAYS`); there is no
   absolute maximum session age.
+- **Email confirmation and storefront accounts** ship switched off. The release runbook
+  (migrations, environment, scheduler, mail, flags, rollback) is in the workspace plan
+  `docs/order-confirmation-plan.md`, section 25. In short:
+  1. deploy the migrations;
+  2. deploy with both flags off;
+  3. prove that email leaves the host;
+  4. schedule `node dist/scripts/run-jobs.js` every 5 minutes;
+  5. turn on `ORDER_CONFIRMATION_ENABLED`, then `STOREFRONT_ACCOUNTS_ENABLED`, checking each
+     in the target environment.
 
 ## Structure
 
@@ -541,6 +783,8 @@ customers by orders or spend gets slow, the other path is storing the three stat
 - `src/customers/` — read-only customers list and details.
 - `src/products/` — categories and the product catalogue (list, details, history, create, edit, archive); `inventory.ts` takes and returns stock.
 - `src/orders/` — orders: list, details, placing (idempotent, takes stock), status and payment changes.
+- `src/storefront-accounts/` — shopper accounts: setup, sessions, recovery, their own token and guard.
+- `src/storefront-tokens/`, `src/email-outbox/` — single-use shopper tokens; the durable email outbox.
 - `src/mail/` — mail abstraction with console and SMTP transports.
 - `src/common/` — guards, decorators, validators, crypto helpers, public ids, money.
 - `src/scripts/create-admin.ts` — first-admin bootstrap. `src/scripts/seed-dev-data.ts` — dev seed.
