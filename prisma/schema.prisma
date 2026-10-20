@@ -156,6 +156,7 @@ model EmailVerificationToken {
 // ---------------------------------------------------------------------------
 // Customers and orders. Customers are storefront shoppers, a separate identity
 // from dashboard users: they never sign in here and have no relation to User.
+// A Customer is bookkeeping, not a login; see StorefrontAccount for that.
 // ---------------------------------------------------------------------------
 
 enum AddressType {
@@ -183,6 +184,18 @@ enum PaymentStatus {
 // unpaid, since the cash is collected on delivery.
 enum PaymentMethod {
   COD
+}
+
+// Whether an order had to be confirmed from the buyer's inbox. EXEMPT orders
+// never needed it: everything that existed before email confirmation, and orders
+// staff record in the dashboard. EXEMPT says nothing about the email address;
+// only CONFIRMED means the buyer proved it.
+enum OrderConfirmationStatus {
+  EXEMPT
+  AWAITING_CONFIRMATION
+  CONFIRMED
+  // Not confirmed in time. The order was cancelled and its stock put back.
+  EXPIRED
 }
 
 model Customer {
@@ -228,52 +241,84 @@ model CustomerAddress {
 
 // An order keeps snapshots of the customer, addresses and products as they were
 // when it was placed, so it reads the same if any of them later change. Only its
-// status and payment status ever change afterwards. The migrations check that
-// amounts are never negative, that total = subtotal + shipping - discount + tax,
-// and that the status and payment status make sense together (an order that was
-// shipped is paid; a cancelled one is never "paid").
+// status, payment status, confirmation state and account ever change afterwards.
+// The migrations check that amounts are never negative, that total = subtotal +
+// shipping - discount + tax, that the status and payment status make sense
+// together (an order that was shipped is paid; a cancelled one is never "paid"),
+// and that the confirmation fields agree with each other and with the status.
 model Order {
   // Internal key; never exposed. The public id is "ORD-<number>".
-  id              String        @id @default(uuid())
-  number          Int           @unique @default(autoincrement())
+  id              String         @id @default(uuid())
+  number          Int            @unique @default(autoincrement())
   customerId      String
   // Restrict: orders are business records, so a customer with orders is never hard-deleted.
-  customer        Customer      @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  customer        Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
   customerName    String
   customerEmail   String
   customerPhone   String?
-  status          OrderStatus   @default(PENDING)
-  paymentStatus   PaymentStatus @default(PENDING)
+  status          OrderStatus    @default(PENDING)
+  paymentStatus   PaymentStatus  @default(PENDING)
   paymentMethod   PaymentMethod?
   // What every amount below is denominated in, fixed when the order is placed.
   // Rows that predate this column are USD.
-  currency        Currency      @default(PKR)
-  subtotal        Decimal       @db.Decimal(12, 2)
-  shipping        Decimal       @db.Decimal(12, 2)
-  discount        Decimal       @db.Decimal(12, 2)
-  tax             Decimal       @db.Decimal(12, 2)
-  total           Decimal       @db.Decimal(12, 2)
+  currency        Currency       @default(PKR)
+  subtotal        Decimal        @db.Decimal(12, 2)
+  shipping        Decimal        @db.Decimal(12, 2)
+  discount        Decimal        @db.Decimal(12, 2)
+  tax             Decimal        @db.Decimal(12, 2)
+  total           Decimal        @db.Decimal(12, 2)
   // OrderAddress snapshots (recipientName, phone, addressLine1, addressLine2,
   // city, region, postalCode, country).
   shippingAddress Json
   billingAddress  Json
   // Units across all lines. Written once, with the lines, so the list can show
   // and sort by it without loading them.
-  itemCount       Int           @default(0)
+  itemCount       Int            @default(0)
   // The Idempotency-Key of the request that created the order, and a hash of that
   // request: a retry with the same key and body returns this order instead of
   // placing a second one. Null for orders that were not created through the API.
-  idempotencyKey  String?       @unique
+  idempotencyKey  String?        @unique
   requestHash     String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
 
-  items  OrderItem[]
-  events OrderEvent[]
+  // Email confirmation. The migration's CHECKs tie these together: EXEMPT has
+  // none of the three dates/addresses; the other states have the address and the
+  // deadline, and only CONFIRMED has confirmedAt. An order awaiting confirmation
+  // is still PENDING and unpaid, and an EXPIRED one is CANCELLED.
+  confirmationStatus    OrderConfirmationStatus @default(EXEMPT)
+  // The lower-cased address the confirmation link was sent to. Written with the
+  // order and never changed afterwards (a trigger refuses any change), so it
+  // says which inbox proved the order even if other snapshots are corrected.
+  confirmationEmail     String?
+  // Until when the order can be confirmed; its stock is reserved until then.
+  confirmationExpiresAt DateTime?
+  confirmedAt           DateTime?
+  // The storefront account the order belongs to, if any. Only ever a CONFIRMED
+  // order whose confirmationEmail is the account's email (a CHECK and a trigger
+  // in the migrations): historical and unconfirmed orders are never handed to
+  // an account because an email matches. SetNull: an account going away leaves
+  // the order a guest order.
+  storefrontAccountId   String?
+  storefrontAccount     StorefrontAccount?      @relation(fields: [storefrontAccountId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items            OrderItem[]
+  events           OrderEvent[]
+  storefrontTokens StorefrontToken[]
+  emailJobs        EmailJob[]
 
   @@index([customerId, createdAt(sort: Desc)])
   @@index([createdAt])
   @@index([status, createdAt(sort: Desc)])
+  // Reservations that run out: AWAITING_CONFIRMATION past confirmationExpiresAt.
+  @@index([confirmationStatus, confirmationExpiresAt])
+  // An account's order history, newest first, ties broken by number: the
+  // history endpoint reads a page straight off this index.
+  @@index([storefrontAccountId, createdAt(sort: Desc), number(sort: Desc)])
+  // An address's confirmed orders: claimed by the account created for it, and
+  // what makes it eligible for a setup link.
+  @@index([confirmationEmail, confirmationStatus])
 }
 
 enum OrderEventType {
@@ -418,4 +463,154 @@ model ProductEvent {
   createdAt DateTime         @default(now())
 
   @@index([productId, createdAt(sort: Desc)])
+}
+
+// ---------------------------------------------------------------------------
+// Storefront accounts. A shopper's sign-in, separate from staff (User) and from
+// the dashboard's Customer records: Customer matching stays as it is, and one
+// account may come to cover several Customer rows. An account exists only for
+// an address that confirmed an order. Orders reach an account through
+// Order.storefrontAccountId, never through matching email text.
+// ---------------------------------------------------------------------------
+
+model StorefrontAccount {
+  id              String    @id @default(uuid())
+  // Trimmed and lower-cased, which a CHECK in the migration enforces, so the
+  // unique index is unique per address.
+  email           String    @unique
+  passwordHash    String
+  // When the address was proven (the order confirmation that allowed the account).
+  emailVerifiedAt DateTime
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sessions StorefrontSession[]
+  orders   Order[]
+  tokens   StorefrontToken[]
+}
+
+// A signed-in storefront browser. Same shape and rules as Session, in a table of
+// its own so that no staff lookup can ever find a storefront session. The
+// refresh credential is "<id>.<secret>"; only the SHA-256 of the secret is stored.
+model StorefrontSession {
+  id                       String               @id @default(uuid())
+  accountId                String
+  account                  StorefrontAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  refreshTokenHash         String
+  previousRefreshTokenHash String?
+  rotatedAt                DateTime?
+  expiresAt                DateTime
+  lastUsedAt               DateTime             @default(now())
+  revokedAt                DateTime?
+  revokedReason            SessionRevokeReason?
+  ipAddress                String?
+  userAgent                String?
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+
+  @@index([accountId, revokedAt])
+  @@index([expiresAt])
+}
+
+enum StorefrontTokenPurpose {
+  // Confirms the order it belongs to.
+  ORDER_CONFIRMATION
+  // Lets the address that just confirmed the order create an account.
+  ACCOUNT_SETUP
+  // The guest checkout's receipt: lets whoever placed an order awaiting
+  // confirmation see whether it was confirmed and ask for the email again.
+  // Nothing else: no order details, no confirming, no account.
+  CHECKOUT_RECEIPT
+  // Lets the holder of an account's inbox choose a new password. Bound to the
+  // account, not to an order.
+  PASSWORD_RESET
+}
+
+// Single-use links and permissions sent to or earned by a shopper. Only the
+// SHA-256 of the token is stored; the token itself goes into the email or the
+// confirmation response and nowhere else. A token is used once (usedAt), and
+// issuing a newer one marks the older ones used.
+//
+// A token belongs to an order (confirmation, receipt, account setup) or to an
+// account (password reset), never both; a CHECK in the migration enforces it.
+model StorefrontToken {
+  id        String                 @id @default(uuid())
+  purpose   StorefrontTokenPurpose
+  tokenHash String                 @unique
+  orderId   String?
+  order     Order?                 @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  accountId String?
+  account   StorefrontAccount?     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  // Lower-cased: the address the token was issued for. Account setup takes the
+  // address from here, never from the request.
+  email     String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime               @default(now())
+
+  @@index([orderId, purpose])
+  @@index([accountId, purpose])
+  @@index([expiresAt])
+}
+
+enum EmailJobType {
+  ORDER_CONFIRMATION
+  // A new link to create a storefront account, for an address with a
+  // confirmed order and no account yet.
+  ACCOUNT_SETUP_LINK
+  // A storefront account's password reset link.
+  STOREFRONT_PASSWORD_RESET
+}
+
+enum EmailJobStatus {
+  PENDING
+  SENT
+  // Gave up after maxAttempts.
+  FAILED
+  // No longer needed before it was sent (the order was confirmed or expired).
+  CANCELLED
+}
+
+// The outbox: an email is recorded in the same transaction as the change that
+// needs it, and sent afterwards by whichever runner claims it first (the request
+// itself, or the scheduled job). A claim is a lease (attemptToken until
+// attemptExpiresAt), so a runner that dies mid-send releases the job by timing
+// out. Delivery is at least once.
+model EmailJob {
+  id                String         @id @default(uuid())
+  type              EmailJobType
+  status            EmailJobStatus @default(PENDING)
+  // Lower-cased.
+  recipient         String
+  orderId           String?
+  order             Order?         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  // Recording the same email twice is a no-op, e.g. "order-confirmation:<orderId>:1".
+  idempotencyKey    String         @unique
+  attempts          Int            @default(0)
+  maxAttempts       Int            @default(5)
+  nextAttemptAt     DateTime       @default(now())
+  attemptToken      String?
+  attemptExpiresAt  DateTime?
+  lastAttemptAt     DateTime?
+  sentAt            DateTime?
+  // What the mail provider called the message, when it says.
+  providerMessageId String?
+  // Secrets the message needs (the link token), sealed with AES-256-GCM under
+  // a key derived from the server secret and bound to idempotencyKey (see
+  // EmailOutboxStore). Erased once the job is no longer PENDING, which a CHECK
+  // enforces. Never plaintext.
+  protectedPayload  String?
+  // The last failure, for diagnosis. Never contains a link or token.
+  failureCode       String?
+  failureMessage    String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([status, attemptExpiresAt])
+  @@index([orderId])
+  @@index([createdAt])
+  // How many emails of a kind an address was sent lately (account emails' limits).
+  @@index([recipient, type, createdAt])
 }

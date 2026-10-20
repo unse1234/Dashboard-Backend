@@ -76,7 +76,7 @@ describe('Storefront catalogue (e2e)', () => {
   });
   beforeEach(async () => {
     await ctx.prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "Order", "Product"',
+      'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "EmailJob", "StorefrontToken", "Order", "Product"',
     );
   });
 

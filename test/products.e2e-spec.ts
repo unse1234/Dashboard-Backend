@@ -105,7 +105,7 @@ describe('Products (e2e)', () => {
   // Keeps the signed-in users; only the catalogue data starts over.
   beforeEach(async () => {
     await ctx.prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "Order", "Product"',
+      'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "EmailJob", "StorefrontToken", "Order", "Product"',
     );
   });
 

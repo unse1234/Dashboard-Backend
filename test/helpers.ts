@@ -7,11 +7,13 @@ import { configureApp } from '../src/app.setup';
 import {
   MAIL_TRANSPORT,
   type MailMessage,
+  type MailSendResult,
   type MailTransport,
 } from '../src/mail/mail-transport';
 import type {
   AddressType,
   Currency,
+  OrderConfirmationStatus,
   OrderStatus,
   PaymentMethod,
   PaymentStatus,
@@ -29,10 +31,25 @@ export const csrfHeaders = { Origin: ORIGIN, 'X-CSRF-Protection': '1' };
 /** Captures outgoing email so tests can read the links the app would have sent. */
 export class MemoryMailTransport implements MailTransport {
   readonly sent: MailMessage[] = [];
+  /** Every attempt, failed ones included, in order. */
+  readonly attempted: MailMessage[] = [];
+  private readonly failures: unknown[] = [];
+  /** Wait before each send, so that concurrent dispatches really overlap. */
+  delayMs = 0;
 
-  send(message: MailMessage): Promise<void> {
+  async send(message: MailMessage): Promise<MailSendResult> {
+    this.attempted.push(message);
+    if (this.delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+    }
+    if (this.failures.length > 0) throw this.failures.shift();
     this.sent.push(message);
-    return Promise.resolve();
+    return { messageId: `<memory-${this.sent.length}@test>` };
+  }
+
+  /** The next `times` sends throw `error` instead of sending. */
+  failNext(error: unknown, times = 1): void {
+    for (let i = 0; i < times; i++) this.failures.push(error);
   }
 
   to(email: string): MailMessage[] {
@@ -41,6 +58,9 @@ export class MemoryMailTransport implements MailTransport {
 
   clear(): void {
     this.sent.length = 0;
+    this.attempted.length = 0;
+    this.failures.length = 0;
+    this.delayMs = 0;
   }
 }
 
@@ -96,7 +116,7 @@ export async function createTestApp(
 export async function resetDatabase(prisma: PrismaService): Promise<void> {
   await prisma.$executeRawUnsafe(
     // "Category" is reference data the migration seeds, so it is left alone.
-    'TRUNCATE TABLE "Session", "PasswordResetToken", "EmailVerificationToken", "ImportJob", "User", "ProductEvent", "OrderEvent", "OrderItem", "Order", "Product", "CustomerAddress", "Customer" CASCADE',
+    'TRUNCATE TABLE "Session", "PasswordResetToken", "EmailVerificationToken", "ImportJob", "User", "ProductEvent", "OrderEvent", "OrderItem", "EmailJob", "StorefrontToken", "Order", "Product", "CustomerAddress", "Customer", "StorefrontSession", "StorefrontAccount" CASCADE',
   );
 }
 
@@ -272,6 +292,14 @@ export interface OrderOptions {
    * This only records the order: it does not touch the products' stock.
    */
   items?: { product: LineProduct; quantity: number }[];
+  /** Email-confirmation fields. Left out, the order is EXEMPT, as every order before them. */
+  confirmation?: {
+    status: OrderConfirmationStatus;
+    email?: string | null;
+    expiresAt?: Date | null;
+    confirmedAt?: Date | null;
+    storefrontAccountId?: string | null;
+  };
 }
 
 // A type alias, not an interface: only an alias is assignable to Prisma's JSON
@@ -378,6 +406,15 @@ export function createOrder(
       shippingAddress: { ...testAddress, ...options.shippingAddress },
       billingAddress: testAddress,
       ...(options.createdAt ? { createdAt: options.createdAt } : {}),
+      ...(options.confirmation
+        ? {
+            confirmationStatus: options.confirmation.status,
+            confirmationEmail: options.confirmation.email,
+            confirmationExpiresAt: options.confirmation.expiresAt,
+            confirmedAt: options.confirmation.confirmedAt,
+            storefrontAccountId: options.confirmation.storefrontAccountId,
+          }
+        : {}),
       items: { create: itemLines },
     },
   });

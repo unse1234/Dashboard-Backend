@@ -678,7 +678,7 @@ async function main(): Promise<void> {
   try {
     if (values.reset) {
       await prisma.$executeRawUnsafe(
-        'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "Order", "CustomerAddress", "Customer", "Product"',
+        'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "EmailJob", "StorefrontToken", "Order", "CustomerAddress", "Customer", "Product"',
       );
     } else if (
       (await prisma.customer.count()) > 0 ||

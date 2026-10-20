@@ -96,7 +96,7 @@ describe('Storefront order placement (e2e)', () => {
   beforeEach(async () => {
     jest.restoreAllMocks();
     await ctx.prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "Order", "CustomerAddress", "Customer", "Product"',
+      'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "EmailJob", "StorefrontToken", "Order", "CustomerAddress", "Customer", "Product"',
     );
   });
 

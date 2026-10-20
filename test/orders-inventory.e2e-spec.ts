@@ -108,7 +108,7 @@ describe('Orders and stock (e2e)', () => {
   });
   beforeEach(async () => {
     await ctx.prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "Order", "CustomerAddress", "Customer", "Product"',
+      'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "EmailJob", "StorefrontToken", "Order", "CustomerAddress", "Customer", "Product"',
     );
   });
 

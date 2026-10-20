@@ -84,7 +84,7 @@ describe('Customers (e2e)', () => {
   // Keeps the signed-in admin; only the customer data starts over.
   beforeEach(async () => {
     await ctx.prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "OrderEvent", "OrderItem", "Order", "CustomerAddress", "Customer"',
+      'TRUNCATE TABLE "OrderEvent", "OrderItem", "EmailJob", "StorefrontToken", "Order", "CustomerAddress", "Customer"',
     );
   });
 
