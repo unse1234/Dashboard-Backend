@@ -2,6 +2,7 @@ import { toAmount, type MoneyValue } from '../common/money';
 import { formatPublicId } from '../common/public-id';
 import type {
   Currency,
+  OrderConfirmationStatus,
   OrderStatus,
   PaymentMethod,
   PaymentStatus,
@@ -45,6 +46,20 @@ export interface OrderItemDto {
   total: number;
 }
 
+/**
+ * Where an order stands on email confirmation, for staff. Null for an order
+ * that never needed one (every order placed before it, and staff orders).
+ * While AWAITING_CONFIRMATION the order cannot be processed, shipped,
+ * cancelled or marked paid; past its deadline it is cancelled (EXPIRED).
+ */
+export type OrderEmailConfirmationDto = {
+  status: Exclude<OrderConfirmationStatus, 'EXEMPT'>;
+  /** ISO 8601: the deadline (the stock is held until then). */
+  expiresAt: string;
+  /** ISO 8601, once confirmed. */
+  confirmedAt: string | null;
+} | null;
+
 export interface OrderListItemDto {
   /** Public id, "ORD-<number>". */
   id: string;
@@ -61,6 +76,7 @@ export interface OrderListItemDto {
   total: number;
   /** ISO 8601. */
   createdAt: string;
+  emailConfirmation: OrderEmailConfirmationDto;
 }
 
 export interface OrderDto extends OrderListItemDto {
@@ -91,6 +107,9 @@ export interface OrderListRow {
   itemCount: number;
   total: MoneyValue;
   createdAt: Date;
+  confirmationStatus: OrderConfirmationStatus;
+  confirmationExpiresAt: Date | null;
+  confirmedAt: Date | null;
 }
 
 // Each mapper lists its fields explicitly, so internal columns (uuids, the
@@ -114,6 +133,11 @@ export const orderDetailSelect = {
   total: true,
   shippingAddress: true,
   billingAddress: true,
+  // Email confirmation: the storefront's answers, and the admin DTO's emailConfirmation.
+  confirmationStatus: true,
+  confirmationEmail: true,
+  confirmationExpiresAt: true,
+  confirmedAt: true,
   createdAt: true,
   updatedAt: true,
   items: {
@@ -182,6 +206,23 @@ export function toOrderListItem(row: OrderListRow): OrderListItemDto {
     itemCount: row.itemCount,
     total: toAmount(row.total),
     createdAt: row.createdAt.toISOString(),
+    emailConfirmation: toEmailConfirmation(row),
+  };
+}
+
+function toEmailConfirmation(
+  row: Pick<
+    OrderListRow,
+    'confirmationStatus' | 'confirmationExpiresAt' | 'confirmedAt'
+  >,
+): OrderEmailConfirmationDto {
+  if (row.confirmationStatus === 'EXEMPT' || !row.confirmationExpiresAt) {
+    return null;
+  }
+  return {
+    status: row.confirmationStatus,
+    expiresAt: row.confirmationExpiresAt.toISOString(),
+    confirmedAt: row.confirmedAt?.toISOString() ?? null,
   };
 }
 
@@ -200,6 +241,9 @@ export function toOrderDto(row: OrderDetailRow): OrderDto {
       itemCount: row.itemCount,
       total: row.total,
       createdAt: row.createdAt,
+      confirmationStatus: row.confirmationStatus,
+      confirmationExpiresAt: row.confirmationExpiresAt,
+      confirmedAt: row.confirmedAt,
     }),
     items: row.items.map((item) => ({
       id: item.id,

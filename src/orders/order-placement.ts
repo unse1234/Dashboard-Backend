@@ -75,6 +75,12 @@ export interface PlaceOrderInput {
   billingAddress: Prisma.InputJsonObject;
   /** Null when no signed-in person placed it (a guest). */
   actorId: string | null;
+  /**
+   * When set, the order waits for its buyer to confirm it from `email`'s inbox
+   * by `expiresAt`, holding the stock it took until then. Left out, the order is
+   * EXEMPT, as every staff order and every order before confirmation existed.
+   */
+  confirmation?: { email: string; expiresAt: Date };
   key: string;
   requestHash: string;
   /**
@@ -223,6 +229,13 @@ export async function placeOrder(
       itemCount: ordered.reduce((sum, line) => sum + line.quantity, 0),
       idempotencyKey: input.key,
       requestHash: input.requestHash,
+      ...(input.confirmation
+        ? {
+            confirmationStatus: 'AWAITING_CONFIRMATION' as const,
+            confirmationEmail: input.confirmation.email,
+            confirmationExpiresAt: input.confirmation.expiresAt,
+          }
+        : {}),
       items: {
         create: ordered.map(({ quantity, stock }, index) => ({
           productId: formatPublicId('PRD', stock.number),

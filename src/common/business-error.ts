@@ -20,12 +20,30 @@ export type BusinessErrorCode =
   /** An Idempotency-Key was reused for a different order. */
   | 'IDEMPOTENCY_CONFLICT'
   /** The delivery address is outside the countries the storefront serves. */
-  | 'UNSUPPORTED_DESTINATION';
+  | 'UNSUPPORTED_DESTINATION'
+  /** The address already has as many orders waiting for confirmation as allowed. */
+  | 'TOO_MANY_PENDING_ORDERS'
+  /** A confirmation link that is unknown, malformed or for something else. */
+  | 'CONFIRMATION_NOT_FOUND'
+  /** The order was not confirmed in time and has been cancelled. */
+  | 'CONFIRMATION_EXPIRED'
+  /** A newer confirmation email replaced this link. */
+  | 'CONFIRMATION_LINK_REPLACED'
+  /** The order is no longer waiting for confirmation (confirmed or expired). */
+  | 'CONFIRMATION_NOT_PENDING'
+  /** A checkout receipt that is unknown, malformed, expired or for something else. */
+  | 'RECEIPT_NOT_FOUND'
+  /** The confirmation email may not be sent again for this order. */
+  | 'RESEND_LIMIT_REACHED'
+  /** The confirmation email was sent too recently to send again yet. */
+  | 'RESEND_TOO_SOON';
 
 const STATUS_TEXT: Partial<Record<HttpStatus, string>> = {
   [HttpStatus.BAD_REQUEST]: 'Bad Request',
   [HttpStatus.NOT_FOUND]: 'Not Found',
   [HttpStatus.CONFLICT]: 'Conflict',
+  [HttpStatus.GONE]: 'Gone',
+  [HttpStatus.TOO_MANY_REQUESTS]: 'Too Many Requests',
 };
 
 /**

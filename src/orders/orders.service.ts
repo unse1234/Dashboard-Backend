@@ -16,8 +16,7 @@ import {
 } from '../common/public-id';
 import { Prisma, type OrderStatus } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
-import { restoreStock } from '../products/inventory';
-import { toEventRows } from '../products/product-events';
+import { returnOrderStock } from './order-stock';
 import type {
   CreateOrderDto,
   OrderAddressInputDto,
@@ -56,6 +55,12 @@ export interface OrderPage {
 
 export const CHANGED_MESSAGE =
   'This order was just changed by someone else. Reload it and try again.';
+/**
+ * Staff may not act on an order its buyer has not confirmed yet: it is not an
+ * order until then, and its stock is only held. It confirms or cancels itself.
+ */
+export const AWAITING_CONFIRMATION_MESSAGE =
+  'This order is waiting for the customer to confirm it by email. It can be changed once it is confirmed; if it is not confirmed in time, it is cancelled automatically.';
 export const KEY_REUSED_MESSAGE =
   'This Idempotency-Key was already used for a different order';
 export const MIXED_CURRENCY_MESSAGE =
@@ -168,7 +173,9 @@ export class OrdersService {
         SELECT o."number", c."number" AS "customerNumber", o."customerName",
                o."customerEmail", o."customerPhone", o."status",
                o."paymentStatus", o."paymentMethod", o."currency",
-               o."itemCount", o."total", o."createdAt"
+               o."itemCount", o."total", o."createdAt",
+               o."confirmationStatus", o."confirmationExpiresAt",
+               o."confirmedAt"
         FROM "Order" o
         JOIN "Customer" c ON c."id" = o."customerId"
         WHERE ${where}
@@ -317,12 +324,16 @@ export class OrdersService {
           // Never changes after the order is placed, so it needs no part in
           // the compare-and-set below.
           paymentMethod: true,
+          confirmationStatus: true,
         },
       });
       if (!current) throw new NotFoundException('Order not found');
 
       // Asking for the status it has is not a change: acknowledge, do nothing.
       if (current.status !== target) {
+        if (current.confirmationStatus === 'AWAITING_CONFIRMATION') {
+          throw new ConflictException(AWAITING_CONFIRMATION_MESSAGE);
+        }
         const problem = describeInvalidTransition(
           current.status,
           target,
@@ -337,6 +348,8 @@ export class OrdersService {
             id: current.id,
             status: current.status,
             paymentStatus: current.paymentStatus,
+            // An order confirmed or expired meanwhile is a different order now.
+            confirmationStatus: current.confirmationStatus,
           },
           data: { status: target, paymentStatus },
         });
@@ -351,7 +364,7 @@ export class OrdersService {
           }
         } else {
           if (target === 'CANCELLED') {
-            await this.returnStock(tx, current.id, number);
+            await returnOrderStock(tx, current.id, number);
           }
           await tx.orderEvent.create({
             data: {
@@ -384,7 +397,12 @@ export class OrdersService {
     return this.prisma.$transaction(async (tx) => {
       const current = await tx.order.findUnique({
         where: { number },
-        select: { id: true, status: true, paymentStatus: true },
+        select: {
+          id: true,
+          status: true,
+          paymentStatus: true,
+          confirmationStatus: true,
+        },
       });
       if (!current) throw new NotFoundException('Order not found');
 
@@ -394,12 +412,16 @@ export class OrdersService {
             "A cancelled order can't be marked as paid.",
           );
         }
+        if (current.confirmationStatus === 'AWAITING_CONFIRMATION') {
+          throw new ConflictException(AWAITING_CONFIRMATION_MESSAGE);
+        }
 
         const { count } = await tx.order.updateMany({
           where: {
             id: current.id,
             status: current.status,
             paymentStatus: current.paymentStatus,
+            confirmationStatus: current.confirmationStatus,
           },
           data: { paymentStatus },
         });
@@ -434,47 +456,5 @@ export class OrdersService {
       select: orderDetailSelect,
     });
     return toOrderDto(order);
-  }
-
-  /** Puts back what an order took, and records it on each product's history. */
-  private async returnStock(
-    db: Db,
-    orderId: string,
-    orderNumber: number,
-  ): Promise<void> {
-    const lines = await db.orderItem.findMany({
-      where: { orderId, catalogProductId: { not: null } },
-      select: { catalogProductId: true, quantity: true },
-    });
-
-    const quantities = new Map<string, number>();
-    for (const { catalogProductId, quantity } of lines) {
-      if (catalogProductId === null) continue;
-      quantities.set(
-        catalogProductId,
-        (quantities.get(catalogProductId) ?? 0) + quantity,
-      );
-    }
-
-    const restored = await restoreStock(
-      db,
-      [...quantities].map(([productId, quantity]) => ({ productId, quantity })),
-    );
-    if (restored.length === 0) return;
-    await db.productEvent.createMany({
-      data: restored.flatMap((stock) =>
-        toEventRows(stock.id, null, [
-          {
-            type: 'STOCK_CHANGED',
-            data: {
-              from: stock.stockBefore,
-              to: stock.stockAfter,
-              reason: 'ORDER_CANCELLED',
-              orderNumber,
-            },
-          },
-        ]),
-      ),
-    });
   }
 }

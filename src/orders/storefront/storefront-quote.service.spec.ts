@@ -1,6 +1,7 @@
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { StorefrontStockedProductRow } from '../../products/storefront/storefront-catalog';
 import type { UploadsService } from '../../uploads/uploads.service';
+import type { OrderExpiryService } from '../order-expiry.service';
 import type { BagQuoteDto } from './dto/bag-quote.dto';
 import type { QuoteTokenService } from './quote-token.service';
 import { StorefrontPricingService } from './storefront-pricing.service';
@@ -39,7 +40,12 @@ describe('StorefrontQuoteService bag pricing', () => {
           : reference,
     } as UploadsService,
   );
-  const quotes = new StorefrontQuoteService(pricing, {} as QuoteTokenService);
+  // Bag pricing never expires orders; only the checkout quote does.
+  const quotes = new StorefrontQuoteService(
+    pricing,
+    {} as QuoteTokenService,
+    {} as OrderExpiryService,
+  );
 
   beforeEach(() => {
     read.mockReset();

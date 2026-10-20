@@ -115,6 +115,19 @@ export class EnvironmentVariables {
   @IsUrl({ require_tld: false, require_protocol: true })
   FRONTEND_URL!: string;
 
+  /**
+   * Base URL of the storefront, used to build links in shopper emails (order
+   * confirmation). Defaults to FRONTEND_URL, which serves both today.
+   */
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsUrl({
+    require_tld: false,
+    require_protocol: true,
+    protocols: ['http', 'https'],
+  })
+  STOREFRONT_URL?: string;
+
   /** Number of reverse proxies in front of the app (0 disables `trust proxy`). */
   @IsInt()
   @Min(0)
@@ -190,6 +203,36 @@ export class EnvironmentVariables {
   @Max(1440)
   QUOTE_TTL_MINUTES: number = 30;
 
+  /**
+   * When true, a storefront order waits for the buyer to confirm it from their
+   * inbox before it counts (its stock is reserved meanwhile). Off until the
+   * confirmation pages and the expiry job exist.
+   */
+  @Transform(toBoolean)
+  @IsBoolean()
+  ORDER_CONFIRMATION_ENABLED: boolean = false;
+
+  /** How long an order waits for confirmation, holding its stock. */
+  @IsInt()
+  @Min(10)
+  @Max(1440)
+  ORDER_CONFIRMATION_TTL_MINUTES: number = 60;
+
+  /**
+   * Storefront accounts: confirming an order offers to create one. Off until
+   * the account endpoints exist. Needs ORDER_CONFIRMATION_ENABLED, since an
+   * account is only ever created for an address an order confirmation proved.
+   */
+  @Transform(toBoolean)
+  @IsBoolean()
+  STOREFRONT_ACCOUNTS_ENABLED: boolean = false;
+
+  /** How long the permission to create an account lasts after confirming. */
+  @IsInt()
+  @Min(5)
+  @Max(60)
+  ACCOUNT_SETUP_TTL_MINUTES: number = 15;
+
   @IsEnum(MailTransportKind)
   MAIL_TRANSPORT: MailTransportKind = MailTransportKind.Console;
 
@@ -261,6 +304,24 @@ function checkCrossFieldRules(config: EnvironmentVariables): string[] {
     }
   }
 
+  if (
+    config.STOREFRONT_ACCOUNTS_ENABLED &&
+    !config.ORDER_CONFIRMATION_ENABLED
+  ) {
+    problems.push(
+      'STOREFRONT_ACCOUNTS_ENABLED=true requires ORDER_CONFIRMATION_ENABLED=true',
+    );
+  }
+
+  if (config.STOREFRONT_URL) {
+    const url = new URL(config.STOREFRONT_URL);
+    if (url.username || url.password || url.search || url.hash) {
+      problems.push(
+        'STOREFRONT_URL must be an http(s) URL without credentials, query or fragment',
+      );
+    }
+  }
+
   const entries = config.CORS_ORIGINS.split(',')
     .map((entry) => entry.trim())
     .filter(Boolean);
@@ -302,6 +363,12 @@ function checkCrossFieldRules(config: EnvironmentVariables): string[] {
     }
     if (!config.FRONTEND_URL.startsWith('https://')) {
       problems.push('FRONTEND_URL must use https in production');
+    }
+    if (
+      config.STOREFRONT_URL &&
+      !config.STOREFRONT_URL.startsWith('https://')
+    ) {
+      problems.push('STOREFRONT_URL must use https in production');
     }
   }
 

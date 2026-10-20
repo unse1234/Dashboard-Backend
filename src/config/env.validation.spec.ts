@@ -48,6 +48,76 @@ describe('env validation', () => {
     }
   });
 
+  it('keeps order confirmation off unless switched on, with a 60-minute deadline', () => {
+    const defaults = validate(valid);
+    expect(defaults.ORDER_CONFIRMATION_ENABLED).toBe(false);
+    expect(defaults.ORDER_CONFIRMATION_TTL_MINUTES).toBe(60);
+    const on = validate({
+      ...valid,
+      ORDER_CONFIRMATION_ENABLED: 'true',
+      ORDER_CONFIRMATION_TTL_MINUTES: '30',
+    });
+    expect(on.ORDER_CONFIRMATION_ENABLED).toBe(true);
+    expect(on.ORDER_CONFIRMATION_TTL_MINUTES).toBe(30);
+    expect(
+      validate({ ...valid, ORDER_CONFIRMATION_ENABLED: 'false' })
+        .ORDER_CONFIRMATION_ENABLED,
+    ).toBe(false);
+    for (const value of ['9', '1441', 'soon']) {
+      expect(() =>
+        validate({ ...valid, ORDER_CONFIRMATION_TTL_MINUTES: value }),
+      ).toThrow(/ORDER_CONFIRMATION_TTL_MINUTES/);
+    }
+    expect(() =>
+      validate({ ...valid, ORDER_CONFIRMATION_ENABLED: 'yes' }),
+    ).toThrow(/ORDER_CONFIRMATION_ENABLED/);
+  });
+
+  it('keeps storefront accounts off, and only allows them with order confirmation', () => {
+    const defaults = validate(valid);
+    expect(defaults.STOREFRONT_ACCOUNTS_ENABLED).toBe(false);
+    expect(defaults.ACCOUNT_SETUP_TTL_MINUTES).toBe(15);
+    expect(() =>
+      validate({ ...valid, STOREFRONT_ACCOUNTS_ENABLED: 'true' }),
+    ).toThrow(
+      /STOREFRONT_ACCOUNTS_ENABLED=true requires ORDER_CONFIRMATION_ENABLED=true/,
+    );
+    expect(
+      validate({
+        ...valid,
+        STOREFRONT_ACCOUNTS_ENABLED: 'true',
+        ORDER_CONFIRMATION_ENABLED: 'true',
+      }).STOREFRONT_ACCOUNTS_ENABLED,
+    ).toBe(true);
+    for (const value of ['4', '61']) {
+      expect(() =>
+        validate({ ...valid, ACCOUNT_SETUP_TTL_MINUTES: value }),
+      ).toThrow(/ACCOUNT_SETUP_TTL_MINUTES/);
+    }
+  });
+
+  it('takes an optional storefront URL for shopper links, https in production', () => {
+    expect(validate(valid).STOREFRONT_URL).toBeUndefined();
+    expect(
+      validate({ ...valid, STOREFRONT_URL: '' }).STOREFRONT_URL,
+    ).toBeUndefined();
+    expect(
+      validate({ ...valid, STOREFRONT_URL: 'http://localhost:3000/shop' })
+        .STOREFRONT_URL,
+    ).toBe('http://localhost:3000/shop');
+    for (const value of [
+      'not a url',
+      'ftp://shop.example',
+      'https://shop.example/?ref=1',
+      'https://shop.example/#x',
+      'https://user:pass@shop.example',
+    ]) {
+      expect(() => validate({ ...valid, STOREFRONT_URL: value })).toThrow(
+        /STOREFRONT_URL/,
+      );
+    }
+  });
+
   it('reports every missing required variable in one error', () => {
     expect(() => validate({})).toThrow(/DATABASE_URL[\s\S]*JWT_ACCESS_SECRET/);
   });
@@ -107,6 +177,26 @@ describe('env validation', () => {
     expect(() => validate({ ...valid, NODE_ENV: 'production' })).toThrow(
       /COOKIE_SECURE must be true[\s\S]*MAIL_TRANSPORT must be smtp/,
     );
+  });
+
+  it('requires an https storefront URL in production', () => {
+    const production = {
+      ...valid,
+      NODE_ENV: 'production',
+      PUBLIC_API_URL: 'https://api.example.com',
+      FRONTEND_URL: 'https://admin.example.com',
+      COOKIE_SECURE: 'true',
+      MAIL_TRANSPORT: 'smtp',
+      SMTP_HOST: 'smtp.example.com',
+      SMTP_PORT: '587',
+    };
+    expect(() =>
+      validate({ ...production, STOREFRONT_URL: 'http://shop.example.com' }),
+    ).toThrow(/STOREFRONT_URL must use https in production/);
+    expect(
+      validate({ ...production, STOREFRONT_URL: 'https://shop.example.com' })
+        .STOREFRONT_URL,
+    ).toBe('https://shop.example.com');
   });
 
   it('requires secure cookies for SameSite=none', () => {

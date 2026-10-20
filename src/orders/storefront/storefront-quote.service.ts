@@ -3,6 +3,7 @@ import { BusinessException } from '../../common/business-error';
 import { toAmount } from '../../common/money';
 import { formatPublicId, parsePublicId } from '../../common/public-id';
 import type { Currency } from '../../generated/prisma/client';
+import { LAZY_EXPIRY_LIMIT, OrderExpiryService } from '../order-expiry.service';
 import { exceedsMaxOrderAmount, priceOrder } from '../order-pricing';
 import { applyBagAction, BagRuleError } from './bag-engine';
 import { canonicalBag } from './bag-input';
@@ -60,6 +61,7 @@ export class StorefrontQuoteService {
   constructor(
     private readonly pricing: StorefrontPricingService,
     private readonly tokens: QuoteTokenService,
+    private readonly expiry: OrderExpiryService,
   ) {}
 
   /**
@@ -132,6 +134,12 @@ export class StorefrontQuoteService {
     }
 
     const lines = canonicalBag(dto.items);
+    // The quote says whether there is stock: stock held by orders nobody
+    // confirmed in time is released first, so it counts as available.
+    await this.expiry.expireOverdue({
+      productNumbers: lines.map((line) => line.number),
+      limit: LAZY_EXPIRY_LIMIT,
+    });
     const bag = await this.pricing.price(lines);
 
     const blocked = bag.lines.filter((line) => line.issue !== null);

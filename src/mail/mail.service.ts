@@ -1,16 +1,20 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.validation';
-import { MAIL_TRANSPORT, type MailTransport } from './mail-transport';
+import { escapeHtml } from './escape-html';
+import {
+  MAIL_TRANSPORT,
+  type MailMessage,
+  type MailSendResult,
+  type MailTransport,
+} from './mail-transport';
+import {
+  buildOrderConfirmationEmail,
+  type OrderConfirmationDetails,
+} from './order-confirmation.email';
 
-const escapeHtml = (value: string) =>
-  value.replace(
-    /[&<>"']/g,
-    (char) =>
-      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[
-        char
-      ] as string,
-  );
+/** Where the storefront page that confirms an order lives. */
+export const ORDER_CONFIRMATION_PATH = '/orders/confirm';
 
 interface ActionEmail {
   to: string;
@@ -26,6 +30,7 @@ interface ActionEmail {
 @Injectable()
 export class MailService {
   private readonly frontendUrl: string;
+  private readonly storefrontUrl: string;
 
   constructor(
     @Inject(MAIL_TRANSPORT) private readonly transport: MailTransport,
@@ -34,6 +39,33 @@ export class MailService {
     this.frontendUrl = config
       .getOrThrow('FRONTEND_URL', { infer: true })
       .replace(/\/+$/, '');
+    // Links in shopper emails come only from configuration, never from a
+    // request's Host or Origin.
+    this.storefrontUrl = (
+      config.get('STOREFRONT_URL', { infer: true }) ?? this.frontendUrl
+    ).replace(/\/+$/, '');
+  }
+
+  /**
+   * The email asking a shopper to confirm an order. The token travels in the
+   * link's fragment, which browsers never send to a server, so it stays out of
+   * access logs and Referer headers. Composed only: the outbox sends it.
+   */
+  orderConfirmation(
+    to: string,
+    details: OrderConfirmationDetails,
+    token: string,
+  ): MailMessage {
+    return buildOrderConfirmationEmail(
+      to,
+      details,
+      this.storefrontLink(ORDER_CONFIRMATION_PATH, token),
+    );
+  }
+
+  /** Hands a composed message to the configured transport. */
+  async deliver(message: MailMessage): Promise<MailSendResult> {
+    return (await this.transport.send(message)) ?? {};
   }
 
   sendInvitation(
@@ -89,11 +121,16 @@ export class MailService {
     });
   }
 
+  /** A storefront page with the token in the fragment, never in the query. */
+  private storefrontLink(path: string, token: string): string {
+    return `${this.storefrontUrl}${path}#token=${encodeURIComponent(token)}`;
+  }
+
   private link(path: string, token: string): string {
     return `${this.frontendUrl}${path}?token=${encodeURIComponent(token)}`;
   }
 
-  private sendAction(email: ActionEmail): Promise<void> {
+  private async sendAction(email: ActionEmail): Promise<void> {
     const text = [
       `Hi ${email.name},`,
       '',
@@ -109,7 +146,7 @@ export class MailService {
       `<p><a href="${escapeHtml(email.url)}">${escapeHtml(email.actionLabel)}</a></p>` +
       `<p>This link expires in ${escapeHtml(email.expiry)} and can be used once.</p>`;
 
-    return this.transport.send({
+    await this.transport.send({
       to: email.to,
       subject: email.subject,
       text,

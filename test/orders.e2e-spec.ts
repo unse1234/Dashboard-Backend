@@ -17,6 +17,7 @@ const LIST_ITEM_FIELDS = [
   'createdAt',
   'currency',
   'customer',
+  'emailConfirmation',
   'id',
   'itemCount',
   'paymentMethod',
@@ -110,7 +111,7 @@ describe('Orders (e2e)', () => {
   // Keeps the signed-in users; only the shop's data starts over.
   beforeEach(async () => {
     await ctx.prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "Order", "CustomerAddress", "Customer", "Product"',
+      'TRUNCATE TABLE "ProductEvent", "OrderEvent", "OrderItem", "EmailJob", "StorefrontToken", "Order", "CustomerAddress", "Customer", "Product"',
     );
   });
 
@@ -233,6 +234,8 @@ describe('Orders (e2e)', () => {
         itemCount: 1,
         total: 82.5,
         createdAt: order.createdAt.toISOString(),
+        // Placed before email confirmation existed: nothing to confirm.
+        emailConfirmation: null,
       });
     });
 

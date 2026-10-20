@@ -6,6 +6,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { CustomersModule } from './customers/customers.module';
+import { EmailOutboxModule } from './email-outbox/email-outbox.module';
 import { EmailVerifiedGuard } from './common/guards/email-verified.guard';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -48,6 +49,7 @@ import { UploadsModule } from './uploads/uploads.module';
     ProductsModule,
     OrdersModule,
     ImportsModule,
+    EmailOutboxModule,
   ],
   controllers: [AppController],
   providers: [

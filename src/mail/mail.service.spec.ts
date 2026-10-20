@@ -10,9 +10,13 @@ describe('MailService', () => {
       return Promise.resolve();
     },
   };
-  const service = new MailService(transport, {
-    getOrThrow: () => 'https://admin.example.com/',
-  } as unknown as ConfigService<never, true>);
+  const configWith = (storefrontUrl?: string) =>
+    ({
+      getOrThrow: () => 'https://admin.example.com/',
+      get: (key: string) =>
+        key === 'STOREFRONT_URL' ? storefrontUrl : undefined,
+    }) as unknown as ConfigService<never, true>;
+  const service = new MailService(transport, configWith());
 
   beforeEach(() => {
     sent.length = 0;
@@ -50,4 +54,61 @@ describe('MailService', () => {
     expect(sent[0].html).toContain('&amp;');
     expect(sent[0].html).toContain('&quot;co&quot;');
   });
+
+  describe('order confirmation', () => {
+    const details = {
+      orderNumber: 10042,
+      customerName: 'Ada',
+      currency: 'PKR' as const,
+      paymentMethod: 'COD' as const,
+      items: [],
+      subtotal: '0.00',
+      shipping: '0.00',
+      tax: '0.00',
+      discount: '0.00',
+      total: '0.00',
+      shippingAddress: {},
+      expiresAt: new Date('2026-10-17T10:00:00Z'),
+    };
+
+    it('links to the storefront with the token in the fragment, never the query', () => {
+      const shop = new MailService(
+        transport,
+        configWith('https://shop.example.com/'),
+      );
+      const message = shop.orderConfirmation(
+        'a@example.com',
+        details,
+        'oc_a b',
+      );
+      expect(message.text).toContain(
+        'https://shop.example.com/orders/confirm#token=oc_a%20b',
+      );
+      expect(message.text).not.toContain('?token=');
+    });
+
+    it('falls back to the frontend URL when no storefront URL is configured', () => {
+      const message = service.orderConfirmation(
+        'a@example.com',
+        details,
+        'oc_x',
+      );
+      expect(message.text).toContain(
+        'https://admin.example.com/orders/confirm#token=oc_x',
+      );
+    });
+
+    it('delivers through the transport, passing the idempotency key on', async () => {
+      await expect(
+        service.deliver({
+          to: 'a@example.com',
+          subject: 's',
+          text: 't',
+          idempotencyKey: 'job-1',
+        }),
+      ).resolves.toEqual({});
+      expect(sent[0].idempotencyKey).toBe('job-1');
+    });
+  });
+
 });

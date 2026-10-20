@@ -10,7 +10,11 @@ export class ConsoleMailTransport implements MailTransport {
 
   send(message: MailMessage): Promise<void> {
     this.logger.log(
-      `\n--- DEV EMAIL (not sent) ---\nTo: ${message.to}\nSubject: ${message.subject}\n\n${message.text}\n----------------------------`,
+      `\n--- DEV EMAIL (not sent) ---\nTo: ${message.to}\nSubject: ${message.subject}${
+        message.idempotencyKey
+          ? `\nIdempotency-Key: ${message.idempotencyKey}`
+          : ''
+      }\n\n${message.text}\n----------------------------`,
     );
     return Promise.resolve();
   }

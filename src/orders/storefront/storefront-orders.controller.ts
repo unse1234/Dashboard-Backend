@@ -8,7 +8,7 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { Public } from '../../common/decorators/public.decorator';
 import { PlaceOrderDto } from './dto/place-order.dto';
-import type { StorefrontReceipt } from './storefront-order.mapper';
+import type { StorefrontPlacement } from './storefront-order.mapper';
 import { StorefrontOrdersService } from './storefront-orders.service';
 
 const MINUTE_MS = 60_000;
@@ -31,12 +31,15 @@ export class StorefrontOrdersController {
 
   // A retry after a timeout counts, so this is not as low as it looks: a person
   // places one order, and perhaps retries it once or twice.
+  // With email confirmation on, the answer is "confirm it first" (outcome
+  // CONFIRMATION_REQUIRED, the deadline and a receipt token) instead of a
+  // receipt; see StorefrontPlacement.
   @Throttle({ default: { limit: 10, ttl: MINUTE_MS } })
   @Post('orders')
   place(
     @Headers('idempotency-key') key: string | undefined,
     @Body() dto: PlaceOrderDto,
-  ): Promise<StorefrontReceipt> {
+  ): Promise<StorefrontPlacement> {
     if (!key || !IDEMPOTENCY_KEY.test(key)) {
       throw new BadRequestException(
         'Send an Idempotency-Key header of 8 to 100 letters, digits, "-" or "_" (a UUID works)',
