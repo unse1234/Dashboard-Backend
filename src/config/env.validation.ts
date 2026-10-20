@@ -233,6 +233,18 @@ export class EnvironmentVariables {
   @Max(60)
   ACCOUNT_SETUP_TTL_MINUTES: number = 15;
 
+  /** Lifetime of a storefront (shopper) access token. */
+  @IsInt()
+  @Min(60)
+  @Max(3600)
+  STOREFRONT_ACCESS_TTL_SECONDS: number = 900;
+
+  /** Lifetime of a storefront refresh session; each refresh extends it. */
+  @IsInt()
+  @Min(1)
+  @Max(90)
+  STOREFRONT_SESSION_TTL_DAYS: number = 30;
+
   @IsEnum(MailTransportKind)
   MAIL_TRANSPORT: MailTransportKind = MailTransportKind.Console;
 
@@ -268,6 +280,13 @@ export class EnvironmentVariables {
 }
 
 export type Env = EnvironmentVariables;
+
+/**
+ * The audience of storefront (shopper) access tokens. Fixed, and refused as
+ * the staff JWT_AUDIENCE, so the two kinds of token can never be mistaken for
+ * each other even before their different signing keys are compared.
+ */
+export const STOREFRONT_TOKEN_AUDIENCE = 'ecom-dash-storefront';
 
 /** Splits and normalizes a comma-separated origin list; invalid entries are dropped. */
 export function parseOrigins(raw: string): string[] {
@@ -310,6 +329,12 @@ function checkCrossFieldRules(config: EnvironmentVariables): string[] {
   ) {
     problems.push(
       'STOREFRONT_ACCOUNTS_ENABLED=true requires ORDER_CONFIRMATION_ENABLED=true',
+    );
+  }
+
+  if (config.JWT_AUDIENCE === STOREFRONT_TOKEN_AUDIENCE) {
+    problems.push(
+      `JWT_AUDIENCE must not be "${STOREFRONT_TOKEN_AUDIENCE}", which storefront (shopper) tokens use`,
     );
   }
 

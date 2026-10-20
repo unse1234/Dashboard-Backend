@@ -39,17 +39,19 @@ export class TokenService {
   /** Pins the algorithm so tokens signed with "none" or another algorithm are rejected. */
   async verifyAccessToken(token: string): Promise<AccessTokenPayload> {
     try {
-      const payload = await this.jwt.verifyAsync<Partial<AccessTokenPayload>>(
-        token,
-        {
-          algorithms: ['HS256'],
-          issuer: this.issuer,
-          audience: this.audience,
-        },
-      );
+      const payload = await this.jwt.verifyAsync<
+        Partial<AccessTokenPayload> & { typ?: unknown }
+      >(token, {
+        algorithms: ['HS256'],
+        issuer: this.issuer,
+        audience: this.audience,
+      });
       if (typeof payload.sub !== 'string' || typeof payload.sid !== 'string') {
         throw new Error('Malformed payload');
       }
+      // Staff tokens carry no "typ"; storefront (shopper) tokens do, and are
+      // signed with another key for another audience besides.
+      if (payload.typ !== undefined) throw new Error('Not a staff token');
       return { sub: payload.sub, sid: payload.sid };
     } catch {
       throw new UnauthorizedException('Invalid or expired token');

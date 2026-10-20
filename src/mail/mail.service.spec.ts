@@ -111,4 +111,45 @@ describe('MailService', () => {
     });
   });
 
+  describe('storefront account emails', () => {
+    const shop = new MailService(
+      transport,
+      configWith('https://shop.example.com'),
+    );
+    const expiresAt = new Date('2026-10-17T10:00:00Z');
+
+    it('sends setup links to the storefront setup page, token in the fragment', () => {
+      const message = shop.accountSetupLink(
+        'a@example.com',
+        'as_x y',
+        expiresAt,
+      );
+      expect(message).toMatchObject({
+        to: 'a@example.com',
+        subject: 'Set up your account',
+      });
+      expect(message.text).toContain(
+        'https://shop.example.com/account/setup#token=as_x%20y',
+      );
+      expect(message.html).toContain(
+        'href="https://shop.example.com/account/setup#token=as_x%20y"',
+      );
+      expect(message.text).toContain('17 Oct 2026, 15:00 (Pakistan time)');
+      expect(message.text).not.toContain('?token=');
+    });
+
+    it('sends reset links to the storefront reset page, not the dashboard one', () => {
+      const message = shop.storefrontPasswordReset(
+        'a@example.com',
+        'pr_x',
+        expiresAt,
+      );
+      expect(message.subject).toBe('Reset your password');
+      expect(message.text).toContain(
+        'https://shop.example.com/account/reset-password#token=pr_x',
+      );
+      expect(message.text).not.toContain('admin.example.com');
+      expect(message.text).toContain('your password stays as it is');
+    });
+  });
 });

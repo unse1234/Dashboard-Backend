@@ -96,6 +96,32 @@ describe('env validation', () => {
     }
   });
 
+  it('gives storefront sessions their own lifetimes, within limits', () => {
+    const defaults = validate(valid);
+    expect(defaults.STOREFRONT_ACCESS_TTL_SECONDS).toBe(900);
+    expect(defaults.STOREFRONT_SESSION_TTL_DAYS).toBe(30);
+    expect(
+      validate({ ...valid, STOREFRONT_SESSION_TTL_DAYS: '14' })
+        .STOREFRONT_SESSION_TTL_DAYS,
+    ).toBe(14);
+    for (const [key, value] of [
+      ['STOREFRONT_ACCESS_TTL_SECONDS', '59'],
+      ['STOREFRONT_ACCESS_TTL_SECONDS', '3601'],
+      ['STOREFRONT_SESSION_TTL_DAYS', '0'],
+      ['STOREFRONT_SESSION_TTL_DAYS', '91'],
+    ]) {
+      expect(() => validate({ ...valid, [key]: value })).toThrow(
+        new RegExp(key),
+      );
+    }
+  });
+
+  it('refuses the storefront token audience as the staff one', () => {
+    expect(() =>
+      validate({ ...valid, JWT_AUDIENCE: 'ecom-dash-storefront' }),
+    ).toThrow(/JWT_AUDIENCE must not be "ecom-dash-storefront"/);
+  });
+
   it('takes an optional storefront URL for shopper links, https in production', () => {
     expect(validate(valid).STOREFRONT_URL).toBeUndefined();
     expect(

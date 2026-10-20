@@ -36,7 +36,17 @@ export type BusinessErrorCode =
   /** The confirmation email may not be sent again for this order. */
   | 'RESEND_LIMIT_REACHED'
   /** The confirmation email was sent too recently to send again yet. */
-  | 'RESEND_TOO_SOON';
+  | 'RESEND_TOO_SOON'
+  /** An account setup token that is unknown, malformed, used or replaced. */
+  | 'SETUP_TOKEN_INVALID'
+  /** An account setup token past its time; a new link can be asked for. */
+  | 'SETUP_TOKEN_EXPIRED'
+  /** The address already has a storefront account: sign in or reset instead. */
+  | 'ACCOUNT_EXISTS'
+  /** The password and its confirmation differ. */
+  | 'PASSWORD_MISMATCH'
+  /** A password reset token that is unknown, malformed, used or expired. */
+  | 'RESET_TOKEN_INVALID';
 
 const STATUS_TEXT: Partial<Record<HttpStatus, string>> = {
   [HttpStatus.BAD_REQUEST]: 'Bad Request',

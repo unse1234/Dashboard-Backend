@@ -10,6 +10,7 @@ import {
 } from './email-outbox.policy';
 import { EmailOutboxStore, type ClaimedEmailJob } from './email-outbox.store';
 import { OrderConfirmationEmails } from './order-confirmation-emails';
+import { StorefrontAccountEmails } from './storefront-account-emails';
 
 export type DispatchOutcome =
   | 'sent'
@@ -48,6 +49,7 @@ export class EmailOutboxDispatcher implements OnModuleDestroy {
     private readonly store: EmailOutboxStore,
     private readonly mail: MailService,
     private readonly orderConfirmations: OrderConfirmationEmails,
+    private readonly accountEmails: StorefrontAccountEmails,
   ) {}
 
   /** One bounded pass over due jobs: what the scheduled run calls. */
@@ -167,13 +169,9 @@ export class EmailOutboxDispatcher implements OnModuleDestroy {
     switch (job.type) {
       case 'ORDER_CONFIRMATION':
         return this.orderConfirmations.prepare(job);
-      default:
-        // Storefront account emails get their sender with the accounts.
-        return Promise.resolve({
-          action: 'fail',
-          code: 'UNSUPPORTED_TYPE',
-          message: `No sender for ${job.type} emails`,
-        });
+      case 'ACCOUNT_SETUP_LINK':
+      case 'STOREFRONT_PASSWORD_RESET':
+        return this.accountEmails.prepare({ ...job, type: job.type });
     }
   }
 

@@ -14,6 +14,7 @@ import { validate, type Env } from './config/env.validation';
 import { OrdersModule } from './orders/orders.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
+import { StorefrontAccountsModule } from './storefront-accounts/storefront-accounts.module';
 import { UsersModule } from './users/users.module';
 import { ImportsModule } from './imports/imports.module';
 import { UploadsModule } from './uploads/uploads.module';
@@ -50,6 +51,7 @@ import { UploadsModule } from './uploads/uploads.module';
     OrdersModule,
     ImportsModule,
     EmailOutboxModule,
+    StorefrontAccountsModule,
   ],
   controllers: [AppController],
   providers: [

@@ -12,9 +12,17 @@ import {
   buildOrderConfirmationEmail,
   type OrderConfirmationDetails,
 } from './order-confirmation.email';
+import {
+  buildAccountSetupLinkEmail,
+  buildStorefrontPasswordResetEmail,
+} from './storefront-account.email';
 
 /** Where the storefront page that confirms an order lives. */
 export const ORDER_CONFIRMATION_PATH = '/orders/confirm';
+/** The storefront page that creates an account from a setup link. */
+export const ACCOUNT_SETUP_PATH = '/account/setup';
+/** The storefront page that sets a new password from a reset link. */
+export const STOREFRONT_PASSWORD_RESET_PATH = '/account/reset-password';
 
 interface ActionEmail {
   to: string;
@@ -60,6 +68,28 @@ export class MailService {
       to,
       details,
       this.storefrontLink(ORDER_CONFIRMATION_PATH, token),
+    );
+  }
+
+  /** A new account setup link (token in the fragment, as above). Composed only. */
+  accountSetupLink(to: string, token: string, expiresAt: Date): MailMessage {
+    return buildAccountSetupLinkEmail(
+      to,
+      this.storefrontLink(ACCOUNT_SETUP_PATH, token),
+      expiresAt,
+    );
+  }
+
+  /** A storefront account's password reset link. Composed only. */
+  storefrontPasswordReset(
+    to: string,
+    token: string,
+    expiresAt: Date,
+  ): MailMessage {
+    return buildStorefrontPasswordResetEmail(
+      to,
+      this.storefrontLink(STOREFRONT_PASSWORD_RESET_PATH, token),
+      expiresAt,
     );
   }
 
